@@ -1,0 +1,15 @@
+/build/
+*.local
+*.identcache
+*.stat
+*.dsk
+*.dproj.local
+__history/
+__recovery/
+*.obj
+*.tds
+*.ilc
+*.ild
+*.ilf
+*.ils
+*.log
