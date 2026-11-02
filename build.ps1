@@ -15,8 +15,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed' }
     & '.\ModelTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'Model tests failed' }
+    & $compiler '-tC' '-tM' '-I..' '-eFeedTests.exe' '..\tests\FeedTests.cpp' '..\src\AlertFeed.cpp'
+    if ($LASTEXITCODE -ne 0) { throw 'Feed test compilation failed' }
+    & '.\FeedTests.exe'
+    if ($LASTEXITCODE -ne 0) { throw 'Feed tests failed' }
+    & $compiler '-tC' '-tM' '-I..' '-eHttpTests.exe' '..\tests\HttpTests.cpp' '..\src\AlertsHttp.cpp' '..\src\AlertFeed.cpp'
+    if ($LASTEXITCODE -ne 0) { throw 'HTTP test compilation failed' }
+    & '.\HttpTests.exe'
+    if ($LASTEXITCODE -ne 0) { throw 'HTTP tests failed' }
     if (-not $TestsOnly) {
-        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' 'AlertAsm.obj'
+        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' '..\src\AlertFeed.cpp' '..\src\AlertsHttp.cpp' 'AlertAsm.obj'
         if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
         Write-Host "Application: $PSScriptRoot\build\AirAlertMap.exe"
     }

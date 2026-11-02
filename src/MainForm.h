@@ -5,6 +5,9 @@
 #include <Vcl.ExtCtrls.hpp>
 #include <vector>
 #include "AlertModel.h"
+#include "AlertFeed.h"
+
+class TAlertWorker;
 
 class TMainForm : public TForm {
 __published:
@@ -23,6 +26,20 @@ private:
     TButton* changeButton;
     TButton* resetButton;
     TButton* clearButton;
+    TCheckBox* liveBox;
+    TButton* tokenButton;
+    TButton* refreshButton;
+    TTimer* feedTimer;
+    TAlertWorker* worker;
+    AlertFeed feed;
+    std::wstring apiToken;
+    bool demoMode;
+    bool authPaused;
+    unsigned generation;
+    DWORD lastAttemptTick;
+    DWORD retryDelay;
+    UnicodeString connectionText;
+    UnicodeString lastSuccess;
     int selected;
     UnicodeString changedAt;
     std::vector<HRGN> hitRegions;
@@ -35,6 +52,14 @@ private:
     void ClearRegions();
     int HitTest(int x, int y) const;
     void __fastcall UnknownData(TObject* Sender);
+    void __fastcall ModeChanged(TObject* Sender);
+    void __fastcall EditToken(TObject* Sender);
+    void __fastcall RefreshFeed(TObject* Sender);
+    void __fastcall FeedTick(TObject* Sender);
+    void StartRequest();
+    void ApplyFeed();
+    void UpdateControls();
+    UnicodeString RegionStatusText(int region) const;
 public:
     __fastcall TMainForm(TComponent* Owner);
     __fastcall ~TMainForm();

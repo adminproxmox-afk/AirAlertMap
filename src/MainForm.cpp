@@ -2,11 +2,28 @@
 #pragma hdrstop
 #include "MainForm.h"
 #include "MapData.h"
+#include "AlertsHttp.h"
 #include <math.h>
 #pragma package(smart_init)
 #pragma resource "MainForm.dfm"
 
 TMainForm* MainForm;
+
+// No VCL calls or Synchronize in the worker: the UI polls its OS thread handle.
+class TAlertWorker : public TThread {
+    std::wstring token;
+protected:
+    void __fastcall Execute() {
+        try { result=FetchAlerts(token); }
+        catch(...) { result=ApiResult(); result.networkError=ERROR_GEN_FAILURE; }
+        token.clear();
+    }
+public:
+    ApiResult result;
+    unsigned generation;
+    __fastcall TAlertWorker(const std::wstring& value,unsigned version)
+      : TThread(true),token(value),generation(version) { FreeOnTerminate=false; }
+};
 static TColor RGBColor(int r, int g, int b) { return (TColor)RGB(r,g,b); }
 static const TColor Background = (TColor)0x17110D;
 static const TColor Panel = (TColor)0x231B15;
@@ -15,8 +32,8 @@ static const TColor White = (TColor)0xF4F0EB;
 static const TColor Muted = (TColor)0xAA9B8D;
 static const TColor Accent = (TColor)0xDCD557;
 
-__fastcall TMainForm::TMainForm(TComponent* Owner) : TForm(Owner), regionBox(0), changeButton(0), resetButton(0), clearButton(0), selected(7) {
-    Caption = L"\u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433 \u0423\u043a\u0440\u0430\u0457\u043d\u0438 \u2014 DEMO | C++Builder + x86 ASM";
+__fastcall TMainForm::TMainForm(TComponent* Owner) : TForm(Owner), regionBox(0), changeButton(0), resetButton(0), clearButton(0), liveBox(0), tokenButton(0), refreshButton(0), feedTimer(0), worker(0), demoMode(false), authPaused(false), generation(0), lastAttemptTick(GetTickCount()-60000UL), retryDelay(60000UL), selected(7) {
+    Caption = L"\u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433 \u0423\u043a\u0440\u0430\u0457\u043d\u0438 | API + C++Builder + x86 ASM";
     Color = Background;
     Font->Name = L"Segoe UI";
     Font->Size = 10;
@@ -25,7 +42,7 @@ __fastcall TMainForm::TMainForm(TComponent* Owner) : TForm(Owner), regionBox(0),
     ClientWidth = 1280;
     ClientHeight = 850;
     Constraints->MinWidth = 1120;
-    Constraints->MinHeight = 820;
+    Constraints->MinHeight = 860;
     DoubleBuffered = true;
     KeyPreview = true;
     OnPaint = PaintView;
@@ -60,11 +77,41 @@ __fastcall TMainForm::TMainForm(TComponent* Owner) : TForm(Owner), regionBox(0),
     clearButton->Caption = L"\u041f\u043e\u0437\u043d\u0430\u0447\u0438\u0442\u0438 \u0432\u0441\u0456: \u043d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445";
     clearButton->OnClick = UnknownData;
     clearButton->TabOrder = 3;
-    ResetDemo(this);
+    liveBox = new TCheckBox(this);
+    liveBox->Parent = this;
+    liveBox->Caption = L"\u0410\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0456 \u0434\u0430\u043d\u0456 (API)";
+    liveBox->Font->Color = White;
+    liveBox->Checked = true;
+    liveBox->OnClick = ModeChanged;
+    liveBox->TabOrder = 1;
+    tokenButton = new TButton(this);
+    tokenButton->Parent = this;
+    tokenButton->Caption = L"\u041d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u0442\u0438 API-\u0442\u043e\u043a\u0435\u043d";
+    tokenButton->OnClick = EditToken;
+    tokenButton->TabOrder = 2;
+    refreshButton = new TButton(this);
+    refreshButton->Parent = this;
+    refreshButton->Caption = L"\u041e\u043d\u043e\u0432\u0438\u0442\u0438 \u0437\u0430\u0440\u0430\u0437";
+    refreshButton->OnClick = RefreshFeed;
+    refreshButton->TabOrder = 3;
+    apiToken = System::Sysutils::GetEnvironmentVariable(L"ALERTS_IN_UA_TOKEN").c_str();
+    if(!IsValidApiToken(apiToken)) apiToken.clear();
+    connectionText = apiToken.empty()?L"\u0414\u043e\u0434\u0430\u0439\u0442\u0435 API-\u0442\u043e\u043a\u0435\u043d \u2014 \u0434\u0430\u043d\u0456 \u043f\u043e\u043a\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.":L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043f\u0435\u0440\u0448\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e alerts.in.ua\u2026";
+    lastSuccess=L"\u0449\u0435 \u043d\u0435 \u043e\u0442\u0440\u0438\u043c\u0430\u043d\u043e";
+    feedTimer = new TTimer(this);
+    feedTimer->Interval = 250;
+    feedTimer->OnTimer = FeedTick;
+    feedTimer->Enabled = true;
     ResizeView(this);
+    UpdateControls();
 }
 
-__fastcall TMainForm::~TMainForm() { ClearRegions(); }
+__fastcall TMainForm::~TMainForm() {
+    if(feedTimer) feedTimer->Enabled=false;
+    // HTTP has finite timeouts; no callback can outlive this form.
+    if(worker) { worker->WaitFor(); delete worker; worker=0; }
+    ClearRegions();
+}
 void TMainForm::ClearRegions() {
     for (unsigned i=0;i<hitRegions.size();++i) if (hitRegions[i]) DeleteObject(hitRegions[i]);
     hitRegions.clear();
@@ -97,17 +144,20 @@ TColor TMainForm::StateColor(int state) const {
 }
 UnicodeString TMainForm::StateText(int state) const {
     if(state==asAlert) return L"\u041f\u043e\u0432\u0456\u0442\u0440\u044f\u043d\u0430 \u0442\u0440\u0438\u0432\u043e\u0433\u0430";
-    if(state==asClear) return L"\u0411\u0435\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u0438 (\u0434\u0435\u043c\u043e)";
+    if(state==asClear) return demoMode?L"\u0411\u0435\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u0438 (\u0434\u0435\u043c\u043e)":L"\u041d\u0435\u043c\u0430\u0454 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0457 \u0442\u0440\u0438\u0432\u043e\u0433\u0438";
     return L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445";
 }
 
 void __fastcall TMainForm::ResizeView(TObject*) {
-    if (!regionBox) return;
+    if (!regionBox || !liveBox) return;
     const int sx=ClientWidth-304;
     regionBox->SetBounds(sx+20,286,244,30);
-    changeButton->SetBounds(sx+20,440,244,36);
-    resetButton->SetBounds(sx+20,490,244,34);
-    clearButton->SetBounds(sx+20,534,244,34);
+    liveBox->SetBounds(sx+20,440,244,24);
+    tokenButton->SetBounds(sx+20,478,244,34);
+    refreshButton->SetBounds(sx+20,522,244,34);
+    changeButton->SetBounds(sx+20,478,244,34);
+    resetButton->SetBounds(sx+20,522,244,34);
+    clearButton->SetBounds(sx+20,566,244,30);
     Invalidate();
 }
 
@@ -121,14 +171,15 @@ void __fastcall TMainForm::PaintView(TObject*) {
     Canvas->Pen->Width=1;
     DrawTextAt(82,22,L"\u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433",24,White,true);
     DrawTextAt(83,62,L"\u0423\u041a\u0420\u0410\u0407\u041d\u0410  /  \u041f\u041e\u0412\u0406\u0422\u0420\u042f\u041d\u0410 \u0411\u0415\u0417\u041f\u0415\u041a\u0410",9,Muted);
-    Box(Rect(w-245,30,w-24,66),RGBColor(62,49,30),RGBColor(108,83,42),16);
-    Dot(w-225,48,RGBColor(240,190,104));
-    DrawTextAt(w-211,37,L"\u0414\u0415\u041c\u041e \u00b7 \u0412\u0418\u0413\u0410\u0414\u0410\u041d\u0406 \u0414\u0410\u041d\u0406",9,RGBColor(240,190,104),true);
+    TColor badge=demoMode?RGBColor(240,190,104):feed.available?StateColor(asClear):StateColor(asUnknown);
+    Box(Rect(w-310,30,w-24,66),Panel,Border,16);
+    Dot(w-290,48,badge);
+    DrawTextAt(w-275,37,demoMode?L"\u0414\u0415\u041c\u041e \u00b7 \u0412\u0418\u0413\u0410\u0414\u0410\u041d\u0406 \u0414\u0410\u041d\u0406":feed.available?L"API \u00b7 \u0414\u0410\u041d\u0406 \u041e\u0422\u0420\u0418\u041c\u0410\u041d\u041e":L"API \u00b7 \u041d\u0415\u041c\u0410\u0404 \u0414\u0410\u041d\u0418\u0425",9,badge,true);
     Canvas->Pen->Color=Border; Canvas->MoveTo(24,101); Canvas->LineTo(w-24,101);
 
     const int cardWidth=(w-72)/3;
     const int states[3]={asAlert,asClear,asUnknown};
-    const wchar_t* captions[3]={L"\u0420\u0435\u0433\u0456\u043e\u043d\u0456\u0432 \u0456\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u043e\u044e",L"\u0420\u0435\u0433\u0456\u043e\u043d\u0456\u0432 \u0431\u0435\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u0438",L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445"};
+    const wchar_t* captions[3]={L"\u0420\u0435\u0433\u0456\u043e\u043d\u0456\u0432 \u0456\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u043e\u044e / \u0437\u0430\u0433\u0440\u043e\u0437\u043e\u044e",L"\u0420\u0435\u0433\u0456\u043e\u043d\u0456\u0432 \u0431\u0435\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u0438",L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445"};
     for(int i=0;i<3;++i) {
         const int x=24+i*(cardWidth+12);
         Box(Rect(x,122,x+cardWidth,209),Panel,Border);
@@ -191,30 +242,36 @@ void __fastcall TMainForm::PaintView(TObject*) {
     const int state=model.states[selected];
     Box(Rect(sx+20,336,w-44,407),RGBColor(24,33,44),Border,12);
     Dot(sx+37,359,StateColor(state));
-    DrawTextAt(sx+51,348,StateText(state),10,StateColor(state),true);
-    DrawTextAt(sx+35,377,L"\u0414\u0435\u043c\u043e\u043d\u0441\u0442\u0440\u0430\u0446\u0456\u0439\u043d\u0438\u0439 \u0441\u0442\u0430\u0442\u0443\u0441",9,Muted);
-    DrawTextAt(sx+20,415,L"\u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430 \u0437\u043c\u0456\u043d\u0430: "+changedAt,9,Muted);
-    DrawTextAt(sx+20,592,L"\u041f\u041e\u0417\u041d\u0410\u0427\u0415\u041d\u041d\u042f",8,Muted,true);
-    const wchar_t* labels[3]={L"\u0422\u0440\u0438\u0432\u043e\u0433\u0430 (\u0434\u0435\u043c\u043e)",L"\u0411\u0435\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u0438 (\u0434\u0435\u043c\u043e)",L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445"};
+    DrawTextAt(sx+51,348,RegionStatusText(selected),10,StateColor(state),true);
+    DrawTextAt(sx+35,377,demoMode?L"\u0414\u0435\u043c\u043e\u043d\u0441\u0442\u0440\u0430\u0446\u0456\u0439\u043d\u0438\u0439 \u0441\u0442\u0430\u0442\u0443\u0441":L"\u0414\u0436\u0435\u0440\u0435\u043b\u043e: alerts.in.ua",9,Muted);
+    DrawTextAt(sx+20,415,demoMode?L"\u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430 \u0437\u043c\u0456\u043d\u0430: "+changedAt:L"\u041e\u0441\u0442\u0430\u043d\u043d\u0456\u0439 \u0443\u0441\u043f\u0456\u0445: "+lastSuccess,9,Muted);
+    if(!demoMode) {
+        DrawTextAt(sx+20,566,L"\u041e\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f \u043a\u043e\u0436\u043d\u0456 60 \u0441\u0435\u043a\u0443\u043d\u0434",9,Muted);
+        DrawTextAt(sx+20,587,worker?L"\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f\u2026":authPaused?L"\u0414\u043e\u0441\u0442\u0443\u043f \u043f\u0440\u0438\u0437\u0443\u043f\u0438\u043d\u0435\u043d\u043e":apiToken.empty()?L"\u0422\u043e\u043a\u0435\u043d \u0449\u0435 \u043d\u0435 \u0437\u0430\u0434\u0430\u043d\u043e":L"\u0410\u0432\u0442\u043e\u043e\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f \u0443\u0432\u0456\u043c\u043a\u043d\u0435\u043d\u043e",9,Muted);
+    }
+    DrawTextAt(sx+20,620,L"\u041f\u041e\u0417\u041d\u0410\u0427\u0415\u041d\u041d\u042f",8,Muted,true);
+    const wchar_t* labels[3]={L"\u0422\u0440\u0438\u0432\u043e\u0433\u0430 / \u0437\u0430\u0433\u0440\u043e\u0437\u0430",L"\u041d\u0435\u043c\u0430\u0454 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0457 \u0442\u0440\u0438\u0432\u043e\u0433\u0438",L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445"};
     for(int i=0;i<3;++i) {
-        Dot(sx+25,625+i*27,StateColor(states[i]));
-        DrawTextAt(sx+40,615+i*27,labels[i],9,White);
+        Dot(sx+25,652+i*24,StateColor(states[i]));
+        DrawTextAt(sx+40,642+i*24,labels[i],9,White);
     }
     Box(Rect(24,h-79,w-24,h-24),RGBColor(47,38,26),RGBColor(89,69,38),12);
-    DrawTextAt(42,h-68,L"\u0414\u0415\u041c\u041e\u0420\u0415\u0416\u0418\u041c. \u041f\u043e\u0442\u043e\u0447\u043d\u0456 \u0442\u0440\u0438\u0432\u043e\u0433\u0438 \u043d\u0435 \u0437\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0443\u044e\u0442\u044c\u0441\u044f. \u0414\u043b\u044f \u0440\u0456\u0448\u0435\u043d\u044c \u043a\u043e\u0440\u0438\u0441\u0442\u0443\u0439\u0442\u0435\u0441\u044f \u043e\u0444\u0456\u0446\u0456\u0439\u043d\u0438\u043c\u0438 \u0441\u043f\u043e\u0432\u0456\u0449\u0435\u043d\u043d\u044f\u043c\u0438.",10,RGBColor(237,196,127),true);
-    DrawTextAt(42,h-47,L"C++Builder VCL \u00b7 Win32 \u00b7 \u043f\u0456\u0434\u0440\u0430\u0445\u0443\u043d\u043e\u043a \u0430\u043a\u0442\u0438\u0432\u043d\u0438\u0445 \u0440\u0435\u0433\u0456\u043e\u043d\u0456\u0432: x86 ASM  |  Tab: \u0435\u043b\u0435\u043c\u0435\u043d\u0442\u0438 \u043a\u0435\u0440\u0443\u0432\u0430\u043d\u043d\u044f \u00b7 R: \u0441\u043a\u0438\u043d\u0443\u0442\u0438 \u0434\u0435\u043c\u043e",8,Muted);
+    DrawTextAt(42,h-68,demoMode?UnicodeString(L"\u0414\u0415\u041c\u041e\u0420\u0415\u0416\u0418\u041c. \u0412\u0438\u0433\u0430\u0434\u0430\u043d\u0456 \u0434\u0430\u043d\u0456; \u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0456 \u0442\u0440\u0438\u0432\u043e\u0433\u0438 \u043d\u0435 \u0437\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0443\u044e\u0442\u044c\u0441\u044f."):connectionText,10,RGBColor(237,196,127),true);
+    DrawTextAt(42,h-47,L"\u0414\u043b\u044f \u0440\u0456\u0448\u0435\u043d\u044c \u043a\u043e\u0440\u0438\u0441\u0442\u0443\u0439\u0442\u0435\u0441\u044f \u043e\u0444\u0456\u0446\u0456\u0439\u043d\u0438\u043c\u0438 \u0441\u043f\u043e\u0432\u0456\u0449\u0435\u043d\u043d\u044f\u043c\u0438.  |  API: alerts.in.ua \u00b7 C++Builder VCL \u00b7 x86 ASM",8,Muted);
 }
 
 void __fastcall TMainForm::SelectRegion(TObject*) {
     if(regionBox->ItemIndex>=0) { selected=regionBox->ItemIndex; Invalidate(); }
 }
 void __fastcall TMainForm::ChangeState(TObject*) {
-    if(model.Cycle(selected)) { changedAt=FormatDateTime(L"hh:nn:ss",Now()); Invalidate(); }
+    if(demoMode && model.Cycle(selected)) { changedAt=FormatDateTime(L"hh:nn:ss",Now()); Invalidate(); }
 }
 void __fastcall TMainForm::ResetDemo(TObject*) {
+    if(!demoMode) return;
     model.ResetDemo(); changedAt=FormatDateTime(L"hh:nn:ss",Now()); Invalidate();
 }
 void __fastcall TMainForm::UnknownData(TObject*) {
+    if(!demoMode) return;
     for(int i=0;i<RegionCount;++i) model.states[i]=asUnknown;
     changedAt=FormatDateTime(L"hh:nn:ss",Now()); Invalidate();
 }
@@ -231,10 +288,133 @@ void __fastcall TMainForm::MapMouseDown(TObject*,TMouseButton button,TShiftState
 void __fastcall TMainForm::MapMouseMove(TObject*,TShiftState,int x,int y) {
     int index=HitTest(x,y);
     Cursor=index>=0?crHandPoint:crDefault;
-    UnicodeString hint=index>=0?UnicodeString(Regions[index].name)+L" \u2014 "+StateText(model.states[index]):UnicodeString();
+    UnicodeString hint=index>=0?UnicodeString(Regions[index].name)+L" \u2014 "+RegionStatusText(index):UnicodeString();
     if(Hint!=hint) Hint=hint;
     ShowHint=index>=0;
 }
 void __fastcall TMainForm::KeyPressed(TObject*,WORD &key,TShiftState) {
-    if(key=='R' && ActiveControl!=regionBox) { ResetDemo(this); key=0; }
+    if(demoMode && key=='R' && ActiveControl!=regionBox) { ResetDemo(this); key=0; }
+}
+
+UnicodeString TMainForm::RegionStatusText(int region) const {
+    if(!demoMode && feed.available) {
+        if(feed.snapshot.levels[region]=='P') return L"\u0427\u0430\u0441\u0442\u043a\u043e\u0432\u0430 \u0442\u0440\u0438\u0432\u043e\u0433\u0430";
+        if(feed.snapshot.levels[region]=='Y') return L"\u041f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u044f \u0437\u0430\u0433\u0440\u043e\u0437\u0430";
+    }
+    return StateText(model.states[region]);
+}
+
+void TMainForm::ApplyFeed() {
+    for(int i=0;i<RegionCount;++i) model.states[i]=feed.snapshot.states[i];
+    Invalidate();
+}
+void TMainForm::UpdateControls() {
+    changeButton->Visible=demoMode;
+    resetButton->Visible=demoMode;
+    clearButton->Visible=demoMode;
+    tokenButton->Visible=!demoMode;
+    refreshButton->Visible=!demoMode;
+    DWORD elapsed=(DWORD)(GetTickCount()-lastAttemptTick);
+    refreshButton->Enabled=!demoMode && !worker && !apiToken.empty() && !authPaused && elapsed>=retryDelay;
+    if(worker) refreshButton->Caption=L"\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f\u2026";
+    else if(!apiToken.empty() && !authPaused && elapsed<retryDelay)
+        refreshButton->Caption=L"\u041e\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f \u0447\u0435\u0440\u0435\u0437 "+IntToStr((int)((retryDelay-elapsed+999)/1000))+L" \u0441";
+    else refreshButton->Caption=L"\u041e\u043d\u043e\u0432\u0438\u0442\u0438 \u0437\u0430\u0440\u0430\u0437";
+}
+void __fastcall TMainForm::ModeChanged(TObject*) {
+    ++generation;
+    demoMode=!liveBox->Checked;
+    feed.Unavailable();
+    if(demoMode) ResetDemo(this);
+    else {
+        ApplyFeed();
+        connectionText=apiToken.empty()?L"\u0414\u043e\u0434\u0430\u0439\u0442\u0435 API-\u0442\u043e\u043a\u0435\u043d \u2014 \u0434\u0430\u043d\u0456 \u043f\u043e\u043a\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.":
+            authPaused?L"\u0414\u043e\u0441\u0442\u0443\u043f \u043f\u0440\u0438\u0437\u0443\u043f\u0438\u043d\u0435\u043d\u043e. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 API-\u0442\u043e\u043a\u0435\u043d.":L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043d\u0430\u0441\u0442\u0443\u043f\u043d\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026";
+    }
+    UpdateControls(); Invalidate();
+}
+void __fastcall TMainForm::EditToken(TObject*) {
+    TForm* dialog=new TForm(this,0);
+    try {
+        dialog->Caption=L"\u041f\u0456\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043d\u044f alerts.in.ua";
+        dialog->BorderStyle=bsDialog;
+        dialog->Position=poOwnerFormCenter;
+        dialog->ClientWidth=460; dialog->ClientHeight=225;
+        TLabel* label=new TLabel(dialog); label->Parent=dialog;
+        label->SetBounds(20,16,420,65); label->AutoSize=false; label->WordWrap=true;
+        label->Caption=L"\u0412\u0432\u0435\u0434\u0456\u0442\u044c \u043e\u0441\u043e\u0431\u0438\u0441\u0442\u0438\u0439 \u0442\u043e\u043a\u0435\u043d alerts.in.ua. \u0422\u043e\u043a\u0435\u043d \u0432\u0438\u043a\u043e\u0440\u0438\u0441\u0442\u043e\u0432\u0443\u0454\u0442\u044c\u0441\u044f \u043b\u0438\u0448\u0435 \u0434\u043e \u0437\u0430\u043a\u0440\u0438\u0442\u0442\u044f \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438 \u0442\u0430 \u043d\u0435 \u0437\u0430\u043f\u0438\u0441\u0443\u0454\u0442\u044c\u0441\u044f \u0443 \u0444\u0430\u0439\u043b\u0438. \u041e\u0442\u0440\u0438\u043c\u0430\u043d\u043d\u044f: devs.alerts.in.ua";
+        TEdit* edit=new TEdit(dialog); edit->Parent=dialog;
+        edit->SetBounds(20,96,420,26); edit->PasswordChar=L'*'; edit->MaxLength=2048;
+        edit->Text=apiToken.c_str();
+        TLabel* help=new TLabel(dialog); help->Parent=dialog;
+        help->SetBounds(20,135,420,22); help->Caption=L"\u0410\u0431\u043e \u0437\u0430\u0434\u0430\u0439\u0442\u0435 \u0437\u043c\u0456\u043d\u043d\u0443 \u0441\u0435\u0440\u0435\u0434\u043e\u0432\u0438\u0449\u0430 ALERTS_IN_UA_TOKEN.";
+        TButton* ok=new TButton(dialog); ok->Parent=dialog;
+        ok->SetBounds(210,176,110,32); ok->Caption=L"\u0417\u0430\u0441\u0442\u043e\u0441\u0443\u0432\u0430\u0442\u0438"; ok->ModalResult=mrOk; ok->Default=true;
+        TButton* cancel=new TButton(dialog); cancel->Parent=dialog;
+        cancel->SetBounds(330,176,110,32); cancel->Caption=L"\u0421\u043a\u0430\u0441\u0443\u0432\u0430\u0442\u0438"; cancel->ModalResult=mrCancel; cancel->Cancel=true;
+        dialog->ActiveControl=edit;
+        if(dialog->ShowModal()==mrOk) {
+            std::wstring next=edit->Text.Trim().c_str();
+            if(!IsValidApiToken(next)) {
+                Application->MessageBox(L"\u0412\u0432\u0435\u0434\u0456\u0442\u044c \u0442\u043e\u043a\u0435\u043d \u0431\u0435\u0437 \u043f\u0440\u043e\u0431\u0456\u043b\u0456\u0432 \u0456 \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0456\u0432 \u0440\u044f\u0434\u043a\u0430.",L"\u041d\u0435\u043a\u043e\u0440\u0435\u043a\u0442\u043d\u0438\u0439 \u0442\u043e\u043a\u0435\u043d",MB_OK|MB_ICONINFORMATION);
+                return;
+            }
+            apiToken=next;
+            ++generation; authPaused=false; feed.Unavailable(); ApplyFeed();
+            connectionText=L"\u0422\u043e\u043a\u0435\u043d \u0437\u0430\u0434\u0430\u043d\u043e. \u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026";
+            UpdateControls();
+        }
+    } __finally { delete dialog; }
+}
+void TMainForm::StartRequest() {
+    if(demoMode || worker || apiToken.empty() || authPaused || (DWORD)(GetTickCount()-lastAttemptTick)<retryDelay) return;
+    lastAttemptTick=GetTickCount();
+    retryDelay=60000UL;
+    try {
+        worker=new TAlertWorker(apiToken,generation);
+        worker->Start();
+        connectionText=L"\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f \u0437 alerts.in.ua\u2026";
+    } catch(...) {
+        delete worker; worker=0; feed.Unavailable(); ApplyFeed();
+        connectionText=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0438 \u0437\u0430\u043f\u0438\u0442. \u041f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 \u0445\u0432\u0438\u043b\u0438\u043d\u0443.";
+    }
+    UpdateControls(); Invalidate();
+}
+void __fastcall TMainForm::RefreshFeed(TObject*) { StartRequest(); }
+void __fastcall TMainForm::FeedTick(TObject*) {
+    if(worker && WaitForSingleObject((HANDLE)worker->Handle,0)==WAIT_OBJECT_0) {
+        ApiResult result=worker->result;
+        bool current=worker->generation==generation && !demoMode;
+        delete worker; worker=0;
+        lastAttemptTick=GetTickCount();
+        // Respect server throttling even if the user changed mode during the request.
+        retryDelay=result.retrySeconds*1000UL;
+        if(current) {
+            if(result.error==aeNone) {
+                feed.Accept(result.snapshot,GetTickCount());
+                lastSuccess=FormatDateTime(L"dd.mm hh:nn:ss",Now());
+                connectionText=L"\u041e\u0442\u0440\u0438\u043c\u0430\u043d\u043e \u0434\u0430\u043d\u0456 alerts.in.ua. \u0427\u0430\u0441 \u0432\u0456\u0434\u043f\u043e\u0432\u0456\u0434\u0456: "+lastSuccess+L". \u0410\u0432\u0442\u043e\u043e\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f: 60 \u0441.";
+            } else {
+                feed.Unavailable();
+                if(result.error==aeToken) {
+                    authPaused=true;
+                    connectionText=L"\u0414\u043e\u0441\u0442\u0443\u043f \u0432\u0456\u0434\u0445\u0438\u043b\u0435\u043d\u043e (HTTP "+IntToStr((int)result.status)+L"). \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0442\u043e\u043a\u0435\u043d; \u0430\u0432\u0442\u043e\u0437\u0430\u043f\u0438\u0442\u0438 \u043f\u0440\u0438\u0437\u0443\u043f\u0438\u043d\u0435\u043d\u043e.";
+                } else if(result.status==429) connectionText=L"\u041b\u0456\u043c\u0456\u0442 API. \u041f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 "+IntToStr((int)result.retrySeconds)+L" \u0441; \u043f\u043e\u0442\u043e\u0447\u043d\u0456 \u0434\u0430\u043d\u0456 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.";
+                else if(result.error==aeFormat) connectionText=L"\u041d\u0435\u043a\u043e\u0440\u0435\u043a\u0442\u043d\u0430 \u0432\u0456\u0434\u043f\u043e\u0432\u0456\u0434\u044c API. \u0414\u0430\u043d\u0456 \u043d\u0435 \u0437\u0430\u0441\u0442\u043e\u0441\u043e\u0432\u0430\u043d\u043e; \u043f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 \u0445\u0432\u0438\u043b\u0438\u043d\u0443.";
+                else if(result.error==aeStale) connectionText=L"\u0412\u0456\u0434\u043f\u043e\u0432\u0456\u0434\u044c API \u0437\u0430\u0441\u0442\u0430\u0440\u0456\u043b\u0430. \u041f\u043e\u0442\u043e\u0447\u043d\u0456 \u0434\u0430\u043d\u0456 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.";
+                else if(result.status) connectionText=L"\u041f\u043e\u043c\u0438\u043b\u043a\u0430 API: HTTP "+IntToStr((int)result.status)+L". \u041f\u043e\u0442\u043e\u0447\u043d\u0456 \u0434\u0430\u043d\u0456 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.";
+                else connectionText=L"\u041d\u0435\u043c\u0430\u0454 \u0437\u0432\u2019\u044f\u0437\u043a\u0443 \u0437 API (\u043a\u043e\u0434 "+IntToStr((int)result.networkError)+L"). \u041f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 \u0445\u0432\u0438\u043b\u0438\u043d\u0443.";
+            }
+            ApplyFeed();
+        }
+        Invalidate();
+    }
+    if(!demoMode) {
+        if(feed.Expire(GetTickCount())) {
+            connectionText=L"\u041f\u043e\u043d\u0430\u0434 90 \u0441\u0435\u043a\u0443\u043d\u0434 \u0431\u0435\u0437 \u043f\u0456\u0434\u0442\u0432\u0435\u0440\u0434\u0436\u0435\u043d\u043d\u044f API. \u041f\u043e\u0442\u043e\u0447\u043d\u0456 \u0434\u0430\u043d\u0456 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.";
+            ApplyFeed();
+        }
+        StartRequest();
+    }
+    UpdateControls();
 }
