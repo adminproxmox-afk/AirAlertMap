@@ -94,6 +94,12 @@
         <CppCompile Include="src\AlertsHttp.cpp"><BuildOrder>6</BuildOrder></CppCompile>
         <CppCompile Include="src\UkraineAlarmFeed.cpp"><BuildOrder>7</BuildOrder></CppCompile>
         <CppCompile Include="src\ApiCredentials.cpp"><BuildOrder>8</BuildOrder></CppCompile>
+        <CppCompile Include="src\AppStorage.cpp"><BuildOrder>9</BuildOrder></CppCompile>
+        <HppCompile Include="src\AppStorage.h"/>
+        <CppCompile Include="src\WebMapForm.cpp"><BuildOrder>10</BuildOrder></CppCompile>
+        <HppCompile Include="src\WebMapForm.h"/>
+        <CppCompile Include="src\HistoryReport.cpp"><BuildOrder>11</BuildOrder></CppCompile>
+        <HppCompile Include="src\HistoryReport.h"/>
         <HppCompile Include="src\ApiCredentials.h"/>
         <HppCompile Include="src\UkraineAlarmFeed.h"/>
         <HppCompile Include="src\AlertFeed.h"/>
@@ -143,5 +149,8 @@
         <ProjectFileVersion>12</ProjectFileVersion>
     </ProjectExtensions>
     <Import Project="$(BDS)\Bin\CodeGear.Cpp.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Cpp.Targets')"/>
+    <Target Name="PackageAirAlertAssets" AfterTargets="Build">
+        <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\tools\package-assets.ps1&quot; -Destination &quot;$(MSBuildProjectDirectory)\build\ide\$(Config)&quot;"/>
+    </Target>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
 </Project>

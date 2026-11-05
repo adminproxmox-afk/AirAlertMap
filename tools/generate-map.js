@@ -41,4 +41,14 @@ out+='const int MapRingCount = sizeof(MapRings)/sizeof(MapRings[0]);\n';
 out+='const RegionInfo Regions[27] = {\n'+names.map((n,i)=>'{'+wide(n[0])+','+wide(n[1])+',"'+data.features[i].properties.shapeISO+'",'+project([n[2],n[3]]).map(num).join(',')+'}').join(',\n')+'\n};\n';
 for(const [name,axis,fn] of [['MinX',0,Math.min],['MinY',1,Math.min],['MaxX',0,Math.max],['MaxY',1,Math.max]]) out+='const double Map'+name+' = '+num(fn(...points.map(p=>p[axis])))+';\n';
 fs.writeFileSync(path.join(root,'src/MapData.cpp'),out);
+const regions=names.map((n,i)=>({index:i,name:n[0],shortName:n[1],iso:data.features[i].properties.shapeISO}));
+fs.writeFileSync(path.join(root,'data/regions.json'),JSON.stringify(regions,null,2)+'\n');
+const webRegions=regions.map((region,i)=>({ ...region,
+ label:project([names[i][2],names[i][3]]).map(v=>+v.toFixed(6)),
+ rings:data.features[i].geometry.type==='Polygon'
+  ?data.features[i].geometry.coordinates.map(r=>r.map(project))
+  :data.features[i].geometry.coordinates.flatMap(p=>p.map(r=>r.map(project)))
+}));
+fs.mkdirSync(path.join(root,'web'),{recursive:true});
+fs.writeFileSync(path.join(root,'web/regions.js'),'window.AIRALERT_REGIONS = '+JSON.stringify(webRegions)+';\n');
 console.log('Generated '+rings.length+' rings, '+points.length+' vertices, 27 regions.');

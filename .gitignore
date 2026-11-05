@@ -13,3 +13,7 @@ __recovery/
 *.ilf
 *.ils
 *.log
+__pycache__/
+*.pyc
+/vendor/webview2/
+/.playwright-cli/

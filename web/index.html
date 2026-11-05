@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Інтерактивна мапа · AirAlertMap</title><link rel="icon" href="favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="map.css"></head>
+<body><header><div class="brand"><span class="mark" aria-hidden="true">⌁</span><div><span class="eyebrow">AIRALERTMAP / УКРАЇНА</span><h1>Мапа тривог</h1></div></div><div id="connection" role="status">Очікування даних від програми</div></header>
+<main><section class="workspace" aria-label="Інтерактивна карта України"><div class="map-top"><span id="counts">27 регіонів · немає даних</span><span id="scale">100%</span></div>
+<svg id="map" viewBox="0 0 1000 700" tabindex="0" role="img" aria-label="Мапа областей. Масштаб: плюс і мінус; стрілки: переміщення; 0: вся Україна."><g id="regions"></g><g id="labels" aria-hidden="true"></g></svg>
+<div class="toolbar" aria-label="Керування масштабом"><button id="zoom-in" aria-label="Збільшити">+</button><button id="zoom-out" aria-label="Зменшити">−</button><button id="reset">Вся Україна</button><button id="focus-region">До області</button></div>
+<p class="gesture">Коліщатко — масштаб · перетягування — переміщення · подвійний клік — до області</p></section>
+<aside><label class="eyebrow" for="region-select">ОБРАНИЙ РЕГІОН</label><select id="region-select" aria-label="Оберіть регіон"></select><h2 id="region-name">Харківська область</h2><p id="region-status" class="status unknown">Немає даних</p><p id="source" class="muted">Джерело ще не підключено</p><p id="updated" class="muted">Підтвердження ще не отримано</p>
+<div class="divider"></div><h3>Шари карти</h3><label class="layer"><input type="checkbox" id="show-labels" checked> Підписи регіонів</label><label class="layer"><input type="checkbox" id="show-borders" checked> Межі регіонів</label><label class="layer"><input type="checkbox" id="show-statuses" checked> Кольори станів</label>
+<div class="divider"></div><h3>Позначення</h3><ul class="legend"><li><i class="red"></i>Тривога в усій області</li><li><i class="amber"></i>Часткова / попередня загроза</li><li><i class="clear"></i>Немає активної тривоги</li><li><i class="unknown"></i>Немає даних</li></ul><p class="muted note">Показані межі областей та міст зі спеціальним статусом. Для рішень користуйтеся офіційними сповіщеннями.</p></aside></main>
+<footer><span>Межі: geoBoundaries / © OpenStreetMap contributors · ODbL 1.0</span><span id="mode">Актуальні дані</span></footer>
+<script src="regions.js"></script><script src="map-model.js"></script><script src="map.js"></script></body></html>

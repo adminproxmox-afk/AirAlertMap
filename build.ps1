@@ -31,9 +31,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Credential test compilation failed' }
     & '.\CredentialTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'Credential tests failed' }
+    & $compiler '-tCV' '-tM' '-I..' '-eStorageTests.exe' '..\tests\StorageTests.cpp' '..\src\AppStorage.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\AlertFeed.cpp' '..\src\MapData.cpp'
+    if ($LASTEXITCODE -ne 0) { throw 'Storage test compilation failed' }
+    & '.\StorageTests.exe'
+    if ($LASTEXITCODE -ne 0) { throw 'Storage tests failed' }
     if (-not $TestsOnly) {
-        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' '..\src\AlertFeed.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\ApiCredentials.cpp' 'AlertAsm.obj'
+        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' '..\src\AlertFeed.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\ApiCredentials.cpp' '..\src\AppStorage.cpp' '..\src\WebMapForm.cpp' '..\src\HistoryReport.cpp' 'AlertAsm.obj'
         if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
+        & (Join-Path $PSScriptRoot 'tools\package-assets.ps1') -Destination (Join-Path $PSScriptRoot 'build')
         Write-Host "Application: $PSScriptRoot\build\AirAlertMap.exe"
     }
 } finally { Pop-Location }

@@ -7,8 +7,11 @@
 #include "AlertModel.h"
 #include "AlertFeed.h"
 #include "AlertsHttp.h"
+#include "AppStorage.h"
 
 class TAlertWorker;
+class TReportWorker;
+class TWebMapForm;
 
 class TMainForm : public TForm {
 __published:
@@ -30,9 +33,14 @@ private:
     TCheckBox* liveBox;
     TButton* tokenButton;
     TButton* refreshButton;
+    TButton* webMapButton;
+    TButton* historyButton;
+    TWebMapForm* webMap;
+    TReportWorker* reportWorker;
     TTimer* feedTimer;
     TAlertWorker* worker;
     AlertFeed feed;
+    AppStorage storage;
     std::wstring apiToken;
     std::string regionDirectory;
     ApiProvider provider;
@@ -44,6 +52,8 @@ private:
     DWORD retryDelay;
     UnicodeString connectionText;
     UnicodeString lastSuccess;
+    __int64 confirmedAt;
+    bool historyOk;
     int selected;
     UnicodeString changedAt;
     std::vector<HRGN> hitRegions;
@@ -64,6 +74,11 @@ private:
     void StartRequest();
     void ApplyFeed();
     void UpdateControls();
+    void RecordObservation(bool available);
+    void UpdateWebMap();
+    void __fastcall OpenWebMap(TObject* Sender);
+    void __fastcall OpenHistory(TObject* Sender);
+    void __fastcall WebRegionSelected(TObject* Sender);
     UnicodeString RegionStatusText(int region) const;
 public:
     __fastcall TMainForm(TComponent* Owner);
