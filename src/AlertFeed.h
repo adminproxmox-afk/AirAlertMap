@@ -3,6 +3,9 @@
 #include "AlertModel.h"
 #include <string>
 
+enum AlertVisual { avUnknown, avClear, avRed, avAmber };
+AlertVisual VisualForState(unsigned char state, char level);
+
 struct AlertSnapshot {
     unsigned char states[RegionCount];
     char levels[RegionCount]; // N = none, R = red, Y = yellow, P = partial, ? = unknown.

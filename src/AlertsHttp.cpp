@@ -1,21 +1,42 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
+#include <stdio.h>
 #include "AlertsHttp.h"
+#include "UkraineAlarmFeed.h"
 #pragma link "winhttp.lib"
 
 ApiResult::ApiResult() : error(aeNetwork),status(0),networkError(0),retrySeconds(60) {}
 
+ApiResult PrepareRegionDirectory(const std::string& directory) {
+    ApiResult result;
+    AlertSnapshot sanity;
+    result.status=200;
+    if(!ParseUkraineAlarmCoverage("[]",directory,sanity)) result.error=aeFormat;
+    else { result.regionDirectory=directory; result.error=aePreparing; }
+    return result;
+}
+
+const wchar_t* ApiProviderName(ApiProvider provider) {
+    return provider==apUkraineAlarm?L"UkraineAlarm / Stfalcon":L"alerts.in.ua";
+}
+std::wstring ApiAuthorization(const std::wstring& token,ApiProvider provider) {
+    if(!IsValidApiToken(token)) return L"";
+    return std::wstring(L"Authorization: ")+(provider==apUkraineAlarm?L"":L"Bearer ")+token+L"\r\n";
+}
+
 ApiResult DecodeApiResponse(unsigned status,const std::string& body,
-                           const std::string& retryAfter,unsigned long ageSeconds) {
+                           const std::string& retryAfter,unsigned long ageSeconds,ApiProvider provider,const std::string& directory) {
     ApiResult result;
     result.status=status;
     result.retrySeconds=RetryDelaySeconds(status,retryAfter);
-    if(status==401 || status==403) result.error=aeToken;
+    if(status==401) result.error=aeToken;
+    else if(status==403) result.error=aeForbidden;
     else if(status!=200) result.error=aeHttp;
     else if(ageSeconds>=90) result.error=aeStale;
-    else if(!ParseOblastResponse(body,result.snapshot)) result.error=aeFormat;
+    else if(!(provider==apUkraineAlarm?ParseUkraineAlarmCoverage(body,directory,result.snapshot):ParseOblastResponse(body,result.snapshot))) result.error=aeFormat;
     else result.error=aeNone;
+    if(result.error==aeNone && provider==apUkraineAlarm) result.regionDirectory=directory;
     return result;
 }
 
@@ -67,23 +88,26 @@ static unsigned long AgeHeader(HINTERNET request) {
     return seconds;
 }
 
-ApiResult FetchAlerts(const std::wstring& token) {
+static void SavePublicDiagnostic(const wchar_t* path,const std::string& body) {
+    wchar_t enabled[4];
+    if(GetEnvironmentVariableW(L"AIRALERT_DIAGNOSTICS",enabled,4)!=1 || enabled[0]!=L'1') return;
+    std::string clean=PublicUkraineAlarmDiagnostic(body);
+    if(clean.empty()) return;
+    wchar_t executable[32768];
+    DWORD length=GetModuleFileNameW(NULL,executable,32768);
+    if(!length || length>=32768) return;
+    std::wstring folder(executable,length);
+    folder=folder.substr(0,folder.find_last_of(L"\\/"))+L"\\diagnostics";
+    CreateDirectoryW(folder.c_str(),NULL);
+    std::wstring file=folder+(std::wstring(path)==L"/api/v3/regions"?L"\\regions.json":L"\\alerts.json");
+    FILE* output=_wfopen(file.c_str(),L"wb");
+    if(output) { fwrite(clean.data(),1,clean.size(),output); fclose(output); }
+}
+
+static ApiResult GetJson(HINTERNET connection,const wchar_t* path,const std::wstring& token,
+                         ApiProvider provider,DWORD started,std::string& body) {
     ApiResult result;
-    if(!IsValidApiToken(token)) { result.error=aeToken; return result; }
-    const DWORD started=GetTickCount();
-    HttpHandle session(WinHttpOpen(L"AirAlertMap/0.2",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                  WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0));
-    if(!session) { result.networkError=GetLastError(); return result; }
-    if(!WinHttpSetTimeouts(session,3000,5000,5000,5000)) {
-        result.networkError=GetLastError(); return result;
-    }
-    DWORD retries=1;
-    if(!WinHttpSetOption(session,WINHTTP_OPTION_CONNECT_RETRIES,&retries,sizeof(retries))) {
-        result.networkError=GetLastError(); return result;
-    }
-    HttpHandle connection(WinHttpConnect(session,L"api.alerts.in.ua",INTERNET_DEFAULT_HTTPS_PORT,0));
-    if(!connection) { result.networkError=GetLastError(); return result; }
-    HttpHandle request(WinHttpOpenRequest(connection,L"GET",L"/v2/iot/active_air_raid_alerts_by_oblast.json",
+    HttpHandle request(WinHttpOpenRequest(connection,L"GET",path,
                                          NULL,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE));
     if(!request) { result.networkError=GetLastError(); return result; }
     DWORD redirect=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
@@ -93,7 +117,7 @@ ApiResult FetchAlerts(const std::wstring& token) {
         result.networkError=GetLastError(); return result;
     }
     // Certificate validation stays at Windows defaults. No token in URL or logs.
-    std::wstring headers=L"Authorization: Bearer "+token+L"\r\nAccept: application/json\r\nCache-Control: no-cache\r\n";
+    std::wstring headers=ApiAuthorization(token,provider)+L"Accept: application/json\r\nCache-Control: no-cache\r\n";
     if(!WinHttpSendRequest(request,headers.c_str(),headers.size(),WINHTTP_NO_REQUEST_DATA,0,0,0) ||
        !WinHttpReceiveResponse(request,NULL)) {
         result.networkError=GetLastError(); return result;
@@ -104,16 +128,57 @@ ApiResult FetchAlerts(const std::wstring& token) {
         result.networkError=GetLastError(); return result;
     }
     std::string retry=RetryHeader(request);
-    if(status!=200) return DecodeApiResponse(status,"",retry,0);
+    result.status=status;
+    result.retrySeconds=RetryDelaySeconds(status,retry);
+    if(status!=200) return DecodeApiResponse(status,"",retry,0,provider);
     unsigned long age=AgeHeader(request);
-    std::string body;
+    if(age>=90) { result.error=aeStale; return result; }
     for(;;) {
-        if((DWORD)(GetTickCount()-started)>20000UL) { result.networkError=ERROR_WINHTTP_TIMEOUT; return result; }
+        if((DWORD)(GetTickCount()-started)>30000UL) { result.networkError=ERROR_WINHTTP_TIMEOUT; return result; }
         char buffer[512]; DWORD read=0;
         if(!WinHttpReadData(request,buffer,sizeof(buffer),&read)) { result.networkError=GetLastError(); return result; }
         if(!read) break;
-        if(body.size()+read>4096) { result.error=aeFormat; return result; }
+        unsigned maxBytes=provider==apUkraineAlarm?2*1024*1024:4096;
+        if(body.size()+read>maxBytes) { result.error=aeFormat; return result; }
         body.append(buffer,read);
     }
-    return DecodeApiResponse(status,body,retry,age);
+    result.error=aeNone;
+    if(provider==apUkraineAlarm) SavePublicDiagnostic(path,body);
+    return result;
+}
+
+ApiResult FetchAlerts(const std::wstring& token,ApiProvider provider,const std::string& cachedDirectory) {
+    ApiResult result;
+    if(!IsValidApiToken(token)) { result.error=aeToken; return result; }
+    const DWORD started=GetTickCount();
+    HttpHandle session(WinHttpOpen(L"AirAlertMap/0.3",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                  WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0));
+    if(!session) { result.networkError=GetLastError(); return result; }
+    if(!WinHttpSetTimeouts(session,3000,5000,5000,5000)) {
+        result.networkError=GetLastError(); return result;
+    }
+    DWORD retries=1;
+    if(!WinHttpSetOption(session,WINHTTP_OPTION_CONNECT_RETRIES,&retries,sizeof(retries))) {
+        result.networkError=GetLastError(); return result;
+    }
+    const wchar_t* host=provider==apUkraineAlarm?L"api.ukrainealarm.com":L"api.alerts.in.ua";
+    HttpHandle connection(WinHttpConnect(session,host,INTERNET_DEFAULT_HTTPS_PORT,0));
+    if(!connection) { result.networkError=GetLastError(); return result; }
+    std::string directory=cachedDirectory;
+    if(provider==apUkraineAlarm) {
+        AlertSnapshot sanity;
+        if(directory.empty() || !ParseUkraineAlarmCoverage("[]",directory,sanity)) {
+            directory.clear();
+            result=GetJson(connection,L"/api/v3/regions",token,provider,started,directory);
+            if(result.error!=aeNone) return result;
+            // Do not burst two authenticated requests on initial connection.
+            // Publish only the directory now; the next scheduled request fetches alerts.
+            return PrepareRegionDirectory(directory);
+        }
+    }
+    std::string body;
+    const wchar_t* path=provider==apUkraineAlarm?L"/api/v3/alerts":L"/v2/iot/active_air_raid_alerts_by_oblast.json";
+    result=GetJson(connection,path,token,provider,started,body);
+    if(result.error!=aeNone) { result.regionDirectory=directory; return result; }
+    return DecodeApiResponse(200,body,"",0,provider,directory);
 }

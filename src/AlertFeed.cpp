@@ -1,5 +1,12 @@
 #include "AlertFeed.h"
 
+AlertVisual VisualForState(unsigned char state,char level) {
+    if(state==asUnknown) return avUnknown;
+    if(state==asClear) return avClear;
+    if(level=='P' || level=='Y') return avAmber;
+    return avRed;
+}
+
 AlertSnapshot::AlertSnapshot() {
     for(int i=0;i<RegionCount;++i) { states[i]=asUnknown; levels[i]='?'; }
 }

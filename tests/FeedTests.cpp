@@ -32,6 +32,11 @@ int main() {
     check(ParseOblastResponse("\"YPYNNNNNNNNNNNNNNNNNNNNNNNN\"",snapshot),"accept partial and yellow");
     check(snapshot.levels[18]=='Y' && snapshot.levels[1]=='P' && snapshot.states[1]==asAlert,
           "preserve severity and count partial as active");
+    check(VisualForState(asAlert,'P')==avAmber,"partial alerts use amber");
+    check(VisualForState(asAlert,'Y')==avAmber,"preliminary threat uses amber");
+    check(VisualForState(asAlert,'R')==avRed,"whole-region air alert uses red");
+    check(VisualForState(asClear,'N')==avClear,"confirmed clear is distinct from missing data");
+    check(VisualForState(asUnknown,'R')==avUnknown,"missing data never inherits an alert color");
     check(!ParseOblastResponse("\"NNNNNNNNNNNNNNNNNNNNNNNNNNX\"",snapshot),"malformed update fails");
     check(snapshot.levels[18]=='Y',"failed parse never partially changes previous snapshot");
     check(ParseOblastResponse("\"\\u0052NNNNNNNNNNNNNNNNNNNNNNNNNN\"",snapshot),"accept escaped JSON status");

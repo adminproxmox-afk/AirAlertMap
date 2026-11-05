@@ -6,6 +6,7 @@
 #include <vector>
 #include "AlertModel.h"
 #include "AlertFeed.h"
+#include "AlertsHttp.h"
 
 class TAlertWorker;
 
@@ -33,6 +34,9 @@ private:
     TAlertWorker* worker;
     AlertFeed feed;
     std::wstring apiToken;
+    std::string regionDirectory;
+    ApiProvider provider;
+    bool rememberKey;
     bool demoMode;
     bool authPaused;
     unsigned generation;
@@ -48,6 +52,7 @@ private:
     void Box(const TRect& rect, TColor fill, TColor border, int radius = 16);
     void Dot(int x, int y, TColor color, int radius = 4);
     TColor StateColor(int state) const;
+    TColor RegionColor(int region, bool fill = false) const;
     UnicodeString StateText(int state) const;
     void ClearRegions();
     int HitTest(int x, int y) const;

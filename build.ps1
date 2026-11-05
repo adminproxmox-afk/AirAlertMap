@@ -19,12 +19,20 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Feed test compilation failed' }
     & '.\FeedTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'Feed tests failed' }
-    & $compiler '-tC' '-tM' '-I..' '-eHttpTests.exe' '..\tests\HttpTests.cpp' '..\src\AlertsHttp.cpp' '..\src\AlertFeed.cpp'
+    & $compiler '-tCV' '-tM' '-I..' '-eHttpTests.exe' '..\tests\HttpTests.cpp' '..\src\AlertsHttp.cpp' '..\src\AlertFeed.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\MapData.cpp'
     if ($LASTEXITCODE -ne 0) { throw 'HTTP test compilation failed' }
     & '.\HttpTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'HTTP tests failed' }
+    & $compiler '-tCV' '-tM' '-I..' '-eUkraineAlarmTests.exe' '..\tests\UkraineAlarmTests.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\AlertFeed.cpp' '..\src\MapData.cpp'
+    if ($LASTEXITCODE -ne 0) { throw 'UkraineAlarm test compilation failed' }
+    & '.\UkraineAlarmTests.exe'
+    if ($LASTEXITCODE -ne 0) { throw 'UkraineAlarm tests failed' }
+    & $compiler '-tC' '-tM' '-I..' '-eCredentialTests.exe' '..\tests\CredentialTests.cpp' '..\src\ApiCredentials.cpp' '..\src\AlertFeed.cpp'
+    if ($LASTEXITCODE -ne 0) { throw 'Credential test compilation failed' }
+    & '.\CredentialTests.exe'
+    if ($LASTEXITCODE -ne 0) { throw 'Credential tests failed' }
     if (-not $TestsOnly) {
-        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' '..\src\AlertFeed.cpp' '..\src\AlertsHttp.cpp' 'AlertAsm.obj'
+        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' '..\src\AlertFeed.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\ApiCredentials.cpp' 'AlertAsm.obj'
         if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
         Write-Host "Application: $PSScriptRoot\build\AirAlertMap.exe"
     }

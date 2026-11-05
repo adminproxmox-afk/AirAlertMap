@@ -92,6 +92,10 @@
         </CppCompile>
         <CppCompile Include="src\AlertFeed.cpp"><BuildOrder>5</BuildOrder></CppCompile>
         <CppCompile Include="src\AlertsHttp.cpp"><BuildOrder>6</BuildOrder></CppCompile>
+        <CppCompile Include="src\UkraineAlarmFeed.cpp"><BuildOrder>7</BuildOrder></CppCompile>
+        <CppCompile Include="src\ApiCredentials.cpp"><BuildOrder>8</BuildOrder></CppCompile>
+        <HppCompile Include="src\ApiCredentials.h"/>
+        <HppCompile Include="src\UkraineAlarmFeed.h"/>
         <HppCompile Include="src\AlertFeed.h"/>
         <HppCompile Include="src\AlertsHttp.h"/>
         <HppCompile Include="src\AlertModel.h">
