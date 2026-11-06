@@ -6,7 +6,7 @@ Push-Location $projectRoot
 try {
     python -m unittest discover -s tests -p 'test_*.py'
     if ($LASTEXITCODE -ne 0) { throw 'Python analytics tests failed' }
-    node --test tests/map-model.test.js
+    node --test tests/map-model.test.js tests/detail-model.test.js tests/geodata.test.js
     if ($LASTEXITCODE -ne 0) { throw 'Map JavaScript tests failed' }
     & (Join-Path $PSScriptRoot 'package-assets.ps1') -Destination (Join-Path $projectRoot 'build')
     Set-Location -LiteralPath (Join-Path $projectRoot 'build')

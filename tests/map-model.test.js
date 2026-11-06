@@ -13,7 +13,7 @@ test('zoom preserves the point under the cursor',()=>{
 });
 test('zoom is bounded and reset cannot reveal unbounded space',()=>{
  const tiny=model.zoom(bounds,100,500,350,bounds);
- assert.equal(tiny.w,125);
+ assert.equal(tiny.w,31.25);
  assert.deepEqual(model.zoom(tiny,0.001,500,350,bounds),bounds);
 });
 test('panning stays inside geographic bounds',()=>{

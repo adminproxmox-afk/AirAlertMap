@@ -37,8 +37,11 @@ static int MapIndex(UnicodeString name) {
 struct RegionBinding {
     int mapIndex;
     bool wholeRegion;
-    RegionBinding() : mapIndex(-1),wholeRegion(false) {}
-    RegionBinding(int index,bool whole) : mapIndex(index),wholeRegion(whole) {}
+    TerritoryStatus territory;
+    char ownLevel;
+    bool ownSeverityKnown;
+    RegionBinding() : mapIndex(-1),wholeRegion(false),ownLevel('N'),ownSeverityKnown(false) {}
+    RegionBinding(int index,bool whole) : mapIndex(index),wholeRegion(whole),ownLevel('N'),ownSeverityKnown(false) {}
 };
 typedef std::map<std::wstring,RegionBinding> RegionDirectory;
 
@@ -53,7 +56,7 @@ static TJSONValue* CopyPublicFields(TJSONValue* value,int depth) {
     TJSONObject* object=dynamic_cast<TJSONObject*>(value);
     if(object) {
         TJSONObject* result=new TJSONObject();
-        const wchar_t* fields[]={L"states",L"regionId",L"regionName",L"regionType",L"regionChildIds",L"activeAlerts",L"type",L"level",L"alertLevel"};
+        const wchar_t* fields[]={L"states",L"regionId",L"regionName",L"regionType",L"regionChildIds",L"activeAlerts",L"type",L"level",L"alertLevel",L"activeAlertLevels"};
         for(unsigned i=0;i<sizeof(fields)/sizeof(fields[0]);++i) {
             TJSONValue* field=object->GetValue(UnicodeString(fields[i]));
             if(field) result->AddPair(UnicodeString(fields[i]),CopyPublicFields(field,depth+1));
@@ -74,7 +77,7 @@ std::string PublicUkraineAlarmDiagnostic(const std::string& json) {
     } catch(...) { return ""; }
 }
 
-static bool RegisterRegion(TJSONObject* node,int parent,int depth,RegionDirectory& ids,bool* covered) {
+static bool RegisterRegion(TJSONObject* node,int parent,const std::wstring& parentId,int depth,RegionDirectory& ids,bool* covered) {
     if(!node || depth>16 || ids.size()>20000) return false;
     UnicodeString id=Field(node,L"regionId"),name=Field(node,L"regionName");
     if(id.IsEmpty() || name.IsEmpty()) return false;
@@ -92,15 +95,45 @@ static bool RegisterRegion(TJSONObject* node,int parent,int depth,RegionDirector
     std::wstring key=id.c_str();
     RegionDirectory::iterator existing=ids.find(key);
     if(existing!=ids.end() && existing->second.mapIndex!=index) return false;
-    ids[key]=RegionBinding(index,whole);
+    // A separate city State root may repeat a canonical Community ID. Keep
+    // its original parent, so an oblast/district alarm still reaches the city.
+    if(existing==ids.end()) {
+        RegionBinding binding(index,whole);
+        binding.territory.id=key;
+        binding.territory.parentId=parentId;
+        binding.territory.name=name.c_str();
+        binding.territory.type=Field(node,L"regionType").c_str();
+        if(binding.territory.type.empty()) binding.territory.type=depth==0?L"State":depth==1?L"District":L"Community";
+        binding.territory.oblast=index;
+        ids[key]=binding;
+    } else if(depth>0 && existing->second.territory.parentId.empty()) {
+        existing->second.territory.parentId=parentId;
+        existing->second.territory.name=name.c_str();
+        existing->second.territory.type=Field(node,L"regionType").c_str();
+    } else if(depth>0 && existing->second.territory.parentId!=parentId) return false;
     if(whole) covered[index]=true;
     TJSONValue* children=node->GetValue(UnicodeString(L"regionChildIds"));
     if(!children || dynamic_cast<TJSONNull*>(children)) return true;
     TJSONArray* array=dynamic_cast<TJSONArray*>(children);
     if(!array) return false;
     for(int i=0;i<array->Count;++i)
-        if(!RegisterRegion(dynamic_cast<TJSONObject*>(array->Items[i]),index,depth+1,ids,covered)) return false;
+        if(!RegisterRegion(dynamic_cast<TJSONObject*>(array->Items[i]),index,key,depth+1,ids,covered)) return false;
     return true;
+}
+
+static char AirLevel(TJSONObject* alert,bool& known) {
+    known=false;
+    TJSONArray* levels=dynamic_cast<TJSONArray*>(alert->GetValue(UnicodeString(L"activeAlertLevels")));
+    bool yellow=false;
+    if(levels) for(int i=0;i<levels->Count;++i) {
+        TJSONObject* entry=dynamic_cast<TJSONObject*>(levels->Items[i]);
+        UnicodeString level=entry?Field(entry,L"alertLevel").Trim():UnicodeString();
+        if(System::Sysutils::SameText(level,L"Red")) { known=true; return 'R'; }
+        if(System::Sysutils::SameText(level,L"Yellow")) yellow=true;
+    }
+    if(yellow) { known=true; return 'Y'; }
+    // Older API responses omit levels. Preserve AIR, explicitly unspecified.
+    return 'R';
 }
 
 bool ParseUkraineAlarmCoverage(const std::string& json,const std::string& directory,AlertSnapshot& result) {
@@ -115,7 +148,18 @@ bool ParseUkraineAlarmCoverage(const std::string& json,const std::string& direct
         RegionDirectory ids;
         bool covered[RegionCount]={false};
         for(int i=0;i<states->Count;++i)
-            if(!RegisterRegion(dynamic_cast<TJSONObject*>(states->Items[i]),-1,0,ids,covered)) return false;
+            if(!RegisterRegion(dynamic_cast<TJSONObject*>(states->Items[i]),-1,L"",0,ids,covered)) return false;
+        // Kharkiv and Zaporizhzhia are separate State roots in this API, but
+        // geographically are city communities within their oblasts. Attach
+        // only these explicitly recognized partial roots to the known oblast.
+        for(RegionDirectory::iterator city=ids.begin();city!=ids.end();++city) {
+            RegionBinding& b=city->second;
+            if(b.mapIndex<0 || b.wholeRegion || !b.territory.parentId.empty()) continue;
+            for(RegionDirectory::const_iterator parent=ids.begin();parent!=ids.end();++parent)
+                if(parent->second.wholeRegion && parent->second.mapIndex==b.mapIndex) {
+                    b.territory.parentId=parent->first; break;
+                }
+        }
         AlertSnapshot parsed;
         int mapped=0;
         for(int i=0;i<RegionCount;++i) if(covered[i]) {
@@ -138,13 +182,60 @@ bool ParseUkraineAlarmCoverage(const std::string& json,const std::string& direct
                 if(type!=L"AIR") continue;
                 UnicodeString id=Field(alert,L"regionId");
                 if(id.IsEmpty()) id=Field(region,L"regionId");
-                RegionDirectory::const_iterator binding=ids.find(std::wstring(id.c_str()));
+                RegionDirectory::iterator binding=ids.find(std::wstring(id.c_str()));
                 if(binding!=ids.end() && binding->second.mapIndex==-2) continue;
                 if(binding==ids.end() || binding->second.mapIndex<0) return false;
-                int index=binding->second.mapIndex;
-                char level=binding->second.wholeRegion?'R':'P';
-                if(parsed.levels[index]!='R') parsed.levels[index]=level;
+                bool known=false;
+                char level=AirLevel(alert,known);
+                RegionBinding& b=binding->second;
+                if(b.ownLevel!='R' || level=='R') {
+                    if(b.ownLevel!='R' || level!='R' || !b.ownSeverityKnown) b.ownSeverityKnown=known;
+                    b.ownLevel=level;
+                }
+            }
+        }
+        // Resolve inherited alarms downward only. Upward propagation marks
+        // partial geographic coverage; it must never color a sibling community.
+        for(RegionDirectory::iterator it=ids.begin();it!=ids.end();++it) {
+            RegionBinding& b=it->second;
+            if(b.mapIndex<0) continue;
+            TerritoryStatus& t=b.territory;
+            if(!covered[b.mapIndex]) t.level='?';
+            std::wstring cursor=it->first;
+            for(int depth=0;depth<=16 && !cursor.empty();++depth) {
+                RegionDirectory::const_iterator ancestor=ids.find(cursor);
+                if(ancestor==ids.end()) return false;
+                const RegionBinding& a=ancestor->second;
+                if((a.ownLevel=='R' && (t.level!='R' || (!t.severityKnown && a.ownSeverityKnown))) ||
+                   (a.ownLevel=='Y' && t.level!='R' && t.level!='Y')) {
+                    t.level=a.ownLevel; t.sourceId=cursor;
+                    t.severityKnown=a.ownSeverityKnown;
+                }
+                cursor=a.territory.parentId;
+                if(depth==16 && !cursor.empty()) return false;
+            }
+        }
+        for(RegionDirectory::iterator it=ids.begin();it!=ids.end();++it) {
+            if(it->second.ownLevel=='N' || it->second.mapIndex<0) continue;
+            std::wstring cursor=it->second.territory.parentId;
+            for(int depth=0;depth<16 && !cursor.empty();++depth) {
+                RegionDirectory::iterator parent=ids.find(cursor);
+                if(parent==ids.end()) return false;
+                TerritoryStatus& t=parent->second.territory;
+                if(t.level!='R' && t.level!='Y') { t.partial=true; t.level='P'; }
+                cursor=t.parentId;
+            }
+        }
+        for(RegionDirectory::const_iterator it=ids.begin();it!=ids.end();++it) {
+            const RegionBinding& b=it->second;
+            if(b.mapIndex<0) continue;
+            parsed.territories.push_back(b.territory);
+            char level=b.territory.level;
+            int index=b.mapIndex;
+            if(level=='R' || level=='Y' || level=='P') {
                 parsed.states[index]=asAlert;
+                char aggregate=b.wholeRegion?level:'P';
+                if(parsed.levels[index]!='R' && (parsed.levels[index]!='Y' || aggregate=='R')) parsed.levels[index]=aggregate;
             }
         }
         result=parsed;

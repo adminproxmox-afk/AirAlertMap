@@ -2,13 +2,22 @@
 #define ALERT_FEED_H
 #include "AlertModel.h"
 #include <string>
+#include <vector>
 
 enum AlertVisual { avUnknown, avClear, avRed, avAmber };
 AlertVisual VisualForState(unsigned char state, char level);
 
+struct TerritoryStatus {
+    std::wstring id,parentId,name,type,sourceId;
+    int oblast;
+    char level; // N/R/Y/?; P only for partial descendant coverage.
+    bool partial,severityKnown;
+    TerritoryStatus() : oblast(-1),level('N'),partial(false),severityKnown(false) {}
+};
 struct AlertSnapshot {
     unsigned char states[RegionCount];
     char levels[RegionCount]; // N = none, R = red, Y = yellow, P = partial, ? = unknown.
+    std::vector<TerritoryStatus> territories;
     AlertSnapshot();
 };
 

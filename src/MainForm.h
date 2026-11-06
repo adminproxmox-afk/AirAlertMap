@@ -17,8 +17,8 @@ class TMainForm : public TWebMapForm {
     std::wstring apiToken;
     std::string regionDirectory;
     ApiProvider provider;
-    bool rememberKey,keySaved,demoMode,authPaused,historyOk,settingsError;
-    unsigned generation,settingsRevision;
+    bool rememberKey,keySaved,demoMode,authPaused,historyOk,settingsError,detailsDirty;
+    unsigned generation,settingsRevision,detailRevision;
     DWORD lastAttemptTick,retryDelay;
     int selected,historyDays;
     __int64 confirmedAt,historyGeneratedAt;

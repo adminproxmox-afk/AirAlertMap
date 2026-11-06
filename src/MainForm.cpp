@@ -32,8 +32,8 @@ public:
 
 __fastcall TMainForm::TMainForm(TComponent* owner)
  : TWebMapForm(owner,ExtractFilePath(Application->ExeName)+L"web\\index.html",UnicodeString(AppStorage().Folder().c_str())+L"\\WebView2"),
- feedTimer(0),worker(0),reportWorker(0),provider(apUkraineAlarm),rememberKey(true),keySaved(false),demoMode(false),authPaused(false),historyOk(true),settingsError(false),
- generation(0),settingsRevision(0),lastAttemptTick(GetTickCount()-60000UL),retryDelay(60000UL),selected(7),historyDays(7),confirmedAt(0),historyGeneratedAt(0) {
+ feedTimer(0),worker(0),reportWorker(0),provider(apUkraineAlarm),rememberKey(true),keySaved(false),demoMode(false),authPaused(false),historyOk(true),settingsError(false),detailsDirty(true),
+ generation(0),settingsRevision(0),detailRevision(0),lastAttemptTick(GetTickCount()-60000UL),retryDelay(60000UL),selected(7),historyDays(7),confirmedAt(0),historyGeneratedAt(0) {
     Caption=L"AirAlertMap \u2014 \u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433 \u0423\u043a\u0440\u0430\u0457\u043d\u0438";
     selected=storage.LoadSelectedRegion(selected);
     keySaved=LoadApiCredential(ApiCredentialTarget,apiToken,provider);
@@ -66,11 +66,13 @@ void TMainForm::RecordObservation(bool available) {
     historyOk=storage.AppendObservation(feed.snapshot,available && !demoMode,provider,UtcSeconds());
 }
 void TMainForm::ApplyFeed() {
+    detailsDirty=true; ++detailRevision;
     for(int i=0;i<RegionCount;++i) model.states[i]=feed.snapshot.states[i];
     RecordObservation(feed.available); PublishState();
 }
 void TMainForm::SetMode(bool live) {
     if(demoMode==!live) return;
+    detailsDirty=true; ++detailRevision;
     ++generation; demoMode=!live; feed.Unavailable(); RecordObservation(false);
     if(demoMode) { model.ResetDemo(); connectionText=L"\u0414\u0435\u043c\u043e\u0440\u0435\u0436\u0438\u043c: \u0432\u0438\u0433\u0430\u0434\u0430\u043d\u0456 \u0441\u0442\u0430\u043d\u0438. \u0417\u0430\u043f\u0438\u0442\u0438 API \u043f\u0440\u0438\u0437\u0443\u043f\u0438\u043d\u0435\u043d\u043e."; }
     else { for(int i=0;i<RegionCount;++i) model.states[i]=asUnknown; connectionText=L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043d\u0430\u0441\u0442\u0443\u043f\u043d\u043e\u0433\u043e \u0434\u043e\u0437\u0432\u043e\u043b\u0435\u043d\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026"; }
@@ -100,7 +102,7 @@ void __fastcall TMainForm::Command(TObject*,const UnicodeString& message) {
     }
     try {
         switch(command.type) {
-            case ucReady: break;
+            case ucReady: detailsDirty=true; break;
             case ucSelect: selected=command.region; storage.SaveSelectedRegion(selected); break;
             case ucRefresh: StartRequest(); break;
             case ucMode: SetMode(command.live); break;
@@ -236,13 +238,33 @@ void __fastcall TMainForm::FeedTick(TObject*) {
 
 void TMainForm::PublishState() {
     std::auto_ptr<TJSONObject> state(new TJSONObject());
-    AlertSnapshot value=feed.snapshot;
+    AlertSnapshot value;
     if(demoMode) for(int i=0;i<RegionCount;++i) { value.states[i]=model.states[i]; value.levels[i]='R'; }
-    std::string levels=PublicLevels(value,demoMode||feed.available);
+    const AlertSnapshot& published=demoMode?value:feed.snapshot;
+    std::string levels=PublicLevels(published,demoMode||feed.available);
     DWORD elapsed=(DWORD)(GetTickCount()-lastAttemptTick);
     unsigned remaining=elapsed<retryDelay?(retryDelay-elapsed+999)/1000:0;
     state->AddPair(L"version",new TJSONNumber(1));
     state->AddPair(L"levels",UnicodeString(levels.c_str()));
+    state->AddPair(L"detailRevision",new TJSONNumber((int)detailRevision));
+    if(detailsDirty) {
+      TJSONArray* territories=new TJSONArray();
+      if(!demoMode && feed.available) for(unsigned i=0;i<published.territories.size();++i) {
+        const TerritoryStatus& t=published.territories[i];
+        TJSONObject* item=new TJSONObject();
+        item->AddPair(L"id",UnicodeString(t.id.c_str()));
+        item->AddPair(L"parent",UnicodeString(t.parentId.c_str()));
+        item->AddPair(L"name",UnicodeString(t.name.c_str()));
+        item->AddPair(L"type",UnicodeString(t.type.c_str()));
+        item->AddPair(L"oblast",new TJSONNumber(t.oblast));
+        item->AddPair(L"level",UnicodeString(std::string(1,t.level).c_str()));
+        item->AddPair(L"partial",new TJSONBool(t.partial));
+        item->AddPair(L"severityKnown",new TJSONBool(t.severityKnown));
+        item->AddPair(L"source",UnicodeString(t.sourceId.c_str()));
+        territories->AddElement(item);
+      }
+      state->AddPair(L"territories",territories);
+    }
     state->AddPair(L"available",new TJSONBool(feed.available && !demoMode));
     state->AddPair(L"demo",new TJSONBool(demoMode));
     state->AddPair(L"provider",UnicodeString(provider==apUkraineAlarm?L"ukrainealarm":L"alerts.in.ua"));
@@ -271,4 +293,5 @@ void TMainForm::PublishState() {
     if(!historyJson.IsEmpty()) state->AddPair(L"history",TJSONObject::ParseJSONValue(historyJson,false,false));
     else state->AddPair(L"history",new TJSONNull());
     UpdateSnapshot(state->ToJSON());
+    detailsDirty=false;
 }

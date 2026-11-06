@@ -4,7 +4,7 @@
       return available && typeof value==='string' && /^[NRPY?]{27}$/.test(value)?value:'?'.repeat(27);
     },
     zoom(box,factor,x,y,bounds) {
-      const w=Math.max(bounds.w/8,Math.min(bounds.w,box.w/factor)), h=w*bounds.h/bounds.w;
+      const w=Math.max(bounds.w/32,Math.min(bounds.w,box.w/factor)), h=w*bounds.h/bounds.w;
       return api.pan({x:x-(x-box.x)*w/box.w,y:y-(y-box.y)*h/box.h,w,h},0,0,bounds);
     },
     pan(box,dx,dy,bounds) {

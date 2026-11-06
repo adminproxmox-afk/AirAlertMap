@@ -54,7 +54,13 @@ void __fastcall TWebMapForm::NewWindow(Vcl::Edge::TCustomEdgeBrowser*,Vcl::Edge:
 void __fastcall TWebMapForm::Navigated(Vcl::Edge::TCustomEdgeBrowser*,bool success,Winapi::Webview2::COREWEBVIEW2_WEB_ERROR_STATUS) {
     ready=success && browser->LocationURL==localUri;
     notice->Visible=!ready;
-    if(ready && !snapshot.IsEmpty()) browser->DefaultInterface->PostWebMessageAsJson(const_cast<wchar_t*>(snapshot.c_str()));
+    // The page's ready message can precede NavigationCompleted. Request a full
+    // replay after the trusted document is ready, including territory metadata.
+    if(ready && OnCommand) {
+        snapshot=L""; // A new document needs a replay even if its JSON is identical.
+        OnCommand(this,L"{\"version\":1,\"type\":\"ready\"}");
+    }
+    else if(ready && !snapshot.IsEmpty()) browser->DefaultInterface->PostWebMessageAsJson(const_cast<wchar_t*>(snapshot.c_str()));
 }
 void __fastcall TWebMapForm::Message(Vcl::Edge::TCustomEdgeBrowser*,Vcl::Edge::TWebMessageReceivedEventArgs* args) {
     wchar_t* source=NULL; wchar_t* message=NULL;
