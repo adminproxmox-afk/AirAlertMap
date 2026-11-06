@@ -2,19 +2,16 @@
 #pragma hdrstop
 #include "MainForm.h"
 #include "MapData.h"
-#include "AlertsHttp.h"
 #include "ApiCredentials.h"
-#include "WebMapForm.h"
 #include "HistoryReport.h"
-#include <shellapi.h>
+#include <Vcl.Dialogs.hpp>
+#include <System.JSON.hpp>
+#include <memory>
 #include <stdio.h>
-#include <math.h>
 #pragma package(smart_init)
 #pragma resource "MainForm.dfm"
-
+using namespace System::Json;
 TMainForm* MainForm;
-
-// No VCL calls or Synchronize in the worker: the UI polls its OS thread handle.
 class TAlertWorker : public TThread {
     std::wstring token;
     std::string directory;
@@ -32,82 +29,15 @@ public:
     __fastcall TAlertWorker(const std::wstring& value,unsigned version,ApiProvider source,const std::string& schema)
       : TThread(true),token(value),directory(schema),provider(source),generation(version) { FreeOnTerminate=false; }
 };
-static TColor RGBColor(int r, int g, int b) { return (TColor)RGB(r,g,b); }
-static const TColor Background = (TColor)0x17110D;
-static const TColor Panel = (TColor)0x231B15;
-static const TColor Border = (TColor)0x3B3026;
-static const TColor White = (TColor)0xF4F0EB;
-static const TColor Muted = (TColor)0xAA9B8D;
-static const TColor Accent = (TColor)0xDCD557;
 
-__fastcall TMainForm::TMainForm(TComponent* Owner) : TForm(Owner), regionBox(0), changeButton(0), resetButton(0), clearButton(0), liveBox(0), tokenButton(0), refreshButton(0), webMapButton(0), historyButton(0), webMap(0), reportWorker(0), feedTimer(0), worker(0), provider(apUkraineAlarm), rememberKey(true), demoMode(false), authPaused(false), generation(0), lastAttemptTick(GetTickCount()-60000UL), retryDelay(60000UL), confirmedAt(0), historyOk(true), selected(7) {
-    Caption = L"\u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433 \u0423\u043a\u0440\u0430\u0457\u043d\u0438 | API + C++Builder + x86 ASM";
-    Color = Background;
-    Font->Name = L"Segoe UI";
-    Font->Size = 10;
-    Font->Color = White;
-    Position = poScreenCenter;
-    ClientWidth = 1280;
-    ClientHeight = 850;
-    Constraints->MinWidth = 1120;
-    Constraints->MinHeight = 860;
-    DoubleBuffered = true;
-    KeyPreview = true;
+__fastcall TMainForm::TMainForm(TComponent* owner)
+ : TWebMapForm(owner,ExtractFilePath(Application->ExeName)+L"web\\index.html",UnicodeString(AppStorage().Folder().c_str())+L"\\WebView2"),
+ feedTimer(0),worker(0),reportWorker(0),provider(apUkraineAlarm),rememberKey(true),keySaved(false),demoMode(false),authPaused(false),historyOk(true),settingsError(false),
+ generation(0),settingsRevision(0),lastAttemptTick(GetTickCount()-60000UL),retryDelay(60000UL),selected(7),historyDays(7),confirmedAt(0),historyGeneratedAt(0) {
+    Caption=L"AirAlertMap \u2014 \u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433 \u0423\u043a\u0440\u0430\u0457\u043d\u0438";
     selected=storage.LoadSelectedRegion(selected);
-    OnPaint = PaintView;
-    OnResize = ResizeView;
-    OnMouseDown = MapMouseDown;
-    OnMouseMove = MapMouseMove;
-    OnKeyDown = KeyPressed;
-
-    regionBox = new TComboBox(this);
-    regionBox->Parent = this;
-    regionBox->Style = csDropDownList;
-    regionBox->Color = RGBColor(29,40,50);
-    regionBox->Font->Color = White;
-    regionBox->Font->Size = 10;
-    for (int i=0;i<RegionCount;++i) regionBox->Items->Add(Regions[i].name);
-    regionBox->ItemIndex = selected;
-    regionBox->OnChange = SelectRegion;
-    regionBox->TabOrder = 0;
-
-    changeButton = new TButton(this);
-    changeButton->Parent = this;
-    changeButton->Caption = L"\u0417\u043c\u0456\u043d\u0438\u0442\u0438 \u0434\u0435\u043c\u043e\u0441\u0442\u0430\u0442\u0443\u0441";
-    changeButton->OnClick = ChangeState;
-    changeButton->TabOrder = 1;
-    resetButton = new TButton(this);
-    resetButton->Parent = this;
-    resetButton->Caption = L"\u0412\u0456\u0434\u043d\u043e\u0432\u0438\u0442\u0438 \u0434\u0435\u043c\u043e\u0441\u0446\u0435\u043d\u0430\u0440\u0456\u0439";
-    resetButton->OnClick = ResetDemo;
-    resetButton->TabOrder = 2;
-    clearButton = new TButton(this);
-    clearButton->Parent = this;
-    clearButton->Caption = L"\u041f\u043e\u0437\u043d\u0430\u0447\u0438\u0442\u0438 \u0432\u0441\u0456: \u043d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445";
-    clearButton->OnClick = UnknownData;
-    clearButton->TabOrder = 3;
-    liveBox = new TCheckBox(this);
-    liveBox->Parent = this;
-    liveBox->Caption = L"\u0410\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0456 \u0434\u0430\u043d\u0456 (API)";
-    liveBox->Font->Color = White;
-    liveBox->Checked = true;
-    liveBox->OnClick = ModeChanged;
-    liveBox->TabOrder = 1;
-    tokenButton = new TButton(this);
-    tokenButton->Parent = this;
-    tokenButton->Caption = L"\u041d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u0442\u0438 API-\u0442\u043e\u043a\u0435\u043d";
-    tokenButton->OnClick = EditToken;
-    tokenButton->TabOrder = 2;
-    refreshButton = new TButton(this);
-    refreshButton->Parent = this;
-    refreshButton->Caption = L"\u041e\u043d\u043e\u0432\u0438\u0442\u0438 \u0437\u0430\u0440\u0430\u0437";
-    refreshButton->OnClick = RefreshFeed;
-    refreshButton->TabOrder = 3;
-    webMapButton=new TButton(this); webMapButton->Parent=this;
-    webMapButton->Caption=L"\u0406\u043d\u0442\u0435\u0440\u0430\u043a\u0442\u0438\u0432\u043d\u0430 \u043c\u0430\u043f\u0430"; webMapButton->OnClick=OpenWebMap;
-    historyButton=new TButton(this); historyButton->Parent=this;
-    historyButton->Caption=L"\u0406\u0441\u0442\u043e\u0440\u0456\u044f \u0442\u0430 \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430"; historyButton->OnClick=OpenHistory;
-    if(!LoadApiCredential(ApiCredentialTarget,apiToken,provider)) {
+    keySaved=LoadApiCredential(ApiCredentialTarget,apiToken,provider);
+    if(!keySaved) {
         apiToken=System::Sysutils::GetEnvironmentVariable(L"UKRAINEALARM_API_KEY").c_str();
         if(apiToken.empty()) {
             apiToken=System::Sysutils::GetEnvironmentVariable(L"ALERTS_IN_UA_TOKEN").c_str();
@@ -115,313 +45,121 @@ __fastcall TMainForm::TMainForm(TComponent* Owner) : TForm(Owner), regionBox(0),
         }
     }
     if(!IsValidApiToken(apiToken)) apiToken.clear();
+    rememberKey=apiToken.empty() || keySaved;
     if(provider==apUkraineAlarm) storage.LoadDirectory(regionDirectory,UtcSeconds());
     unsigned remaining=storage.LoadRetry(provider,UtcSeconds());
     if(remaining) { lastAttemptTick=GetTickCount(); retryDelay=remaining*1000UL; }
-    connectionText = apiToken.empty()?L"\u0414\u043e\u0434\u0430\u0439\u0442\u0435 API-\u0442\u043e\u043a\u0435\u043d \u2014 \u0434\u0430\u043d\u0456 \u043f\u043e\u043a\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.":L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043f\u0435\u0440\u0448\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026";
-    lastSuccess=L"\u0449\u0435 \u043d\u0435 \u043e\u0442\u0440\u0438\u043c\u0430\u043d\u043e";
+    connectionText=apiToken.empty()?UnicodeString(L"\u0414\u043e\u0434\u0430\u0439\u0442\u0435 API-\u043a\u043b\u044e\u0447 \u0443 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f\u0445 \u0434\u043b\u044f \u0437\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f \u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0438\u0445 \u0434\u0430\u043d\u0438\u0445."):UnicodeString(L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043f\u0435\u0440\u0448\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026");
     RecordObservation(false);
-    feedTimer = new TTimer(this);
-    feedTimer->Interval = 250;
-    feedTimer->OnTimer = FeedTick;
-    feedTimer->Enabled = true;
-    ResizeView(this);
-    UpdateControls();
+    OnCommand=Command;
+    feedTimer=new TTimer(this); feedTimer->Interval=250; feedTimer->OnTimer=FeedTick; feedTimer->Enabled=true;
+    PublishState();
 }
-
 __fastcall TMainForm::~TMainForm() {
     if(feedTimer) feedTimer->Enabled=false;
-    // HTTP has finite timeouts; no callback can outlive this form.
+    OnCommand=0;
     if(worker) { worker->WaitFor(); delete worker; worker=0; }
     if(reportWorker) { reportWorker->WaitFor(); delete reportWorker; reportWorker=0; }
     RecordObservation(false);
-    delete webMap; webMap=0;
-    ClearRegions();
 }
-void TMainForm::ClearRegions() {
-    for (unsigned i=0;i<hitRegions.size();++i) if (hitRegions[i]) DeleteObject(hitRegions[i]);
-    hitRegions.clear();
+void TMainForm::RecordObservation(bool available) {
+    historyOk=storage.AppendObservation(feed.snapshot,available && !demoMode,provider,UtcSeconds());
 }
-
-void TMainForm::DrawTextAt(int x, int y, const UnicodeString& text, int size, TColor color, bool bold) {
-    Canvas->Font->Name = L"Segoe UI";
-    Canvas->Font->Size = size;
-    Canvas->Font->Color = color;
-    Canvas->Font->Style = bold ? TFontStyles() << fsBold : TFontStyles();
-    Canvas->Brush->Style = bsClear;
-    Canvas->TextOut(x,y,text);
-    Canvas->Brush->Style = bsSolid;
-}
-void TMainForm::Box(const TRect& r, TColor fill, TColor border, int radius) {
-    Canvas->Brush->Color = fill;
-    Canvas->Pen->Color = border;
-    Canvas->Pen->Width = 1;
-    Canvas->RoundRect(r.Left,r.Top,r.Right,r.Bottom,radius,radius);
-}
-void TMainForm::Dot(int x,int y,TColor color,int radius) {
-    Canvas->Brush->Color = color;
-    Canvas->Pen->Color = color;
-    Canvas->Ellipse(x-radius,y-radius,x+radius,y+radius);
-}
-TColor TMainForm::StateColor(int state) const {
-    if(state==asAlert) return RGBColor(246,106,112);
-    if(state==asClear) return RGBColor(78,186,164);
-    return RGBColor(135,150,169);
-}
-TColor TMainForm::RegionColor(int region,bool fill) const {
-    char level=demoMode?'R':feed.snapshot.levels[region];
-    AlertVisual visual=VisualForState(model.states[region],level);
-    if(visual==avAmber) return fill?RGBColor(119,91,35):RGBColor(244,191,77);
-    if(visual==avRed) return fill?RGBColor(124,50,62):StateColor(asAlert);
-    if(visual==avClear) return fill?RGBColor(32,74,73):StateColor(asClear);
-    return fill?RGBColor(49,59,74):StateColor(asUnknown);
-}
-UnicodeString TMainForm::StateText(int state) const {
-    if(state==asAlert) return L"\u041f\u043e\u0432\u0456\u0442\u0440\u044f\u043d\u0430 \u0442\u0440\u0438\u0432\u043e\u0433\u0430";
-    if(state==asClear) return demoMode?L"\u0411\u0435\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u0438 (\u0434\u0435\u043c\u043e)":L"\u041d\u0435\u043c\u0430\u0454 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0457 \u0442\u0440\u0438\u0432\u043e\u0433\u0438";
-    return L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445";
-}
-
-void __fastcall TMainForm::ResizeView(TObject*) {
-    if (!regionBox || !liveBox || !webMapButton || !historyButton) return;
-    const int sx=ClientWidth-304;
-    webMapButton->SetBounds(ClientWidth-620,30,150,34);
-    historyButton->SetBounds(ClientWidth-460,30,150,34);
-    regionBox->SetBounds(sx+20,286,244,30);
-    liveBox->SetBounds(sx+20,440,244,24);
-    tokenButton->SetBounds(sx+20,478,244,34);
-    refreshButton->SetBounds(sx+20,522,244,34);
-    changeButton->SetBounds(sx+20,478,244,34);
-    resetButton->SetBounds(sx+20,522,244,34);
-    clearButton->SetBounds(sx+20,566,244,30);
-    Invalidate();
-}
-
-void __fastcall TMainForm::PaintView(TObject*) {
-    const int w=ClientWidth, h=ClientHeight, sx=w-304;
-    Canvas->Brush->Color = Background;
-    Canvas->FillRect(ClientRect);
-    Box(Rect(24,26,66,68),RGBColor(27,57,61),RGBColor(49,89,90),12);
-    Canvas->Pen->Color = Accent; Canvas->Pen->Width=2;
-    Canvas->MoveTo(34,54); Canvas->LineTo(41,40); Canvas->LineTo(47,54); Canvas->LineTo(56,37);
-    Canvas->Pen->Width=1;
-    DrawTextAt(82,22,L"\u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433",24,White,true);
-    DrawTextAt(83,62,L"\u0423\u041a\u0420\u0410\u0407\u041d\u0410  /  \u041f\u041e\u0412\u0406\u0422\u0420\u042f\u041d\u0410 \u0411\u0415\u0417\u041f\u0415\u041a\u0410",9,Muted);
-    TColor badge=demoMode?RGBColor(240,190,104):feed.available?StateColor(asClear):StateColor(asUnknown);
-    Box(Rect(w-310,30,w-24,66),Panel,Border,16);
-    Dot(w-290,48,badge);
-    DrawTextAt(w-275,37,demoMode?L"\u0414\u0415\u041c\u041e \u00b7 \u0412\u0418\u0413\u0410\u0414\u0410\u041d\u0406 \u0414\u0410\u041d\u0406":feed.available?L"API \u00b7 \u0414\u0410\u041d\u0406 \u041e\u0422\u0420\u0418\u041c\u0410\u041d\u041e":L"API \u00b7 \u041d\u0415\u041c\u0410\u0404 \u0414\u0410\u041d\u0418\u0425",9,badge,true);
-    Canvas->Pen->Color=Border; Canvas->MoveTo(24,101); Canvas->LineTo(w-24,101);
-
-    const int cardWidth=(w-72)/3;
-    const int states[3]={asAlert,asClear,asUnknown};
-    const wchar_t* captions[3]={L"\u0420\u0435\u0433\u0456\u043e\u043d\u0456\u0432 \u0456\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u043e\u044e / \u0437\u0430\u0433\u0440\u043e\u0437\u043e\u044e",L"\u0420\u0435\u0433\u0456\u043e\u043d\u0456\u0432 \u0431\u0435\u0437 \u0442\u0440\u0438\u0432\u043e\u0433\u0438",L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445"};
-    for(int i=0;i<3;++i) {
-        const int x=24+i*(cardWidth+12);
-        Box(Rect(x,122,x+cardWidth,209),Panel,Border);
-        Dot(x+22,145,StateColor(states[i]));
-        DrawTextAt(x+36,135,captions[i],10,Muted);
-        DrawTextAt(x+20,156,IntToStr(model.Count((AlertState)states[i])),25,White,true);
-        DrawTextAt(x+79,175,L"\u0456\u0437 27 \u0440\u0435\u0433\u0456\u043e\u043d\u0456\u0432",9,Muted);
-    }
-
-    mapRect=Rect(24,230,sx-16,h-100);
-    Box(mapRect,Panel,Border);
-    DrawTextAt(44,248,L"\u041e\u0433\u043b\u044f\u0434 \u0440\u0435\u0433\u0456\u043e\u043d\u0456\u0432",13,White,true);
-    DrawTextAt(44,278,L"\u041e\u0431\u0435\u0440\u0456\u0442\u044c \u043e\u0431\u043b\u0430\u0441\u0442\u044c \u043d\u0430 \u043c\u0430\u043f\u0456 \u0430\u0431\u043e \u0443 \u0441\u043f\u0438\u0441\u043a\u0443 \u043f\u0440\u0430\u0432\u043e\u0440\u0443\u0447",9,Muted);
-    const TRect plot=Rect(mapRect.Left+28,mapRect.Top+86,mapRect.Right-28,mapRect.Bottom-52);
-    const double scaleX=(plot.Right-plot.Left)/(MapMaxX-MapMinX);
-    const double scaleY=(plot.Bottom-plot.Top)/(MapMaxY-MapMinY);
-    const double scale=scaleX<scaleY?scaleX:scaleY;
-    const double ox=plot.Left+((plot.Right-plot.Left)-(MapMaxX-MapMinX)*scale)/2;
-    const double oy=plot.Top+((plot.Bottom-plot.Top)-(MapMaxY-MapMinY)*scale)/2;
-
-    // Build one even-odd region for each administrative unit, preserving holes.
-    ClearRegions();
-    for(int i=0;i<RegionCount;++i) {
-        std::vector<POINT> pts; std::vector<int> counts;
-        for(int r=0;r<MapRingCount;++r) if(MapRings[r].region==i) {
-            const MapRing& ring=MapRings[r]; counts.push_back(ring.count);
-            for(int j=0;j<ring.count;++j) {
-                POINT p;
-                p.x=(LONG)(ox+(ring.points[j].x-MapMinX)*scale+0.5);
-                p.y=(LONG)(oy+(ring.points[j].y-MapMinY)*scale+0.5);
-                pts.push_back(p);
-            }
-        }
-        HRGN hrgn=pts.empty()?CreateRectRgn(0,0,0,0):CreatePolyPolygonRgn(&pts[0],&counts[0],counts.size(),ALTERNATE);
-        hitRegions.push_back(hrgn);
-        TColor fill=RegionColor(i,true);
-        HBRUSH brush=CreateSolidBrush(ColorToRGB(fill));
-        FillRgn(Canvas->Handle,hrgn,brush); DeleteObject(brush);
-        brush=CreateSolidBrush(ColorToRGB(RGBColor(85,111,119)));
-        FrameRgn(Canvas->Handle,hrgn,brush,1,1); DeleteObject(brush);
-    }
-    if(selected>=0 && selected<(int)hitRegions.size()) {
-        HBRUSH brush=CreateSolidBrush(ColorToRGB(Accent));
-        FrameRgn(Canvas->Handle,hitRegions[selected],brush,2,2); DeleteObject(brush);
-    }
-    // Label major regions; the two city units remain selectable via the list.
-    for(int i=0;i<25;++i) {
-        int x=(int)(ox+(Regions[i].labelX-MapMinX)*scale);
-        int y=(int)(oy+(Regions[i].labelY-MapMinY)*scale);
-        Canvas->Font->Name=L"Segoe UI"; Canvas->Font->Size=8;
-        Canvas->Font->Style=TFontStyles();
-        UnicodeString label=Regions[i].shortName;
-        DrawTextAt(x-Canvas->TextWidth(label)/2,y-7,label,8,i==selected?Accent:White);
-    }
-    DrawTextAt(mapRect.Left+22,mapRect.Bottom-29,L"\u041c\u0435\u0436\u0456: geoBoundaries / \u00a9 OpenStreetMap contributors \u00b7 ODbL 1.0",8,Muted);
-
-    Box(Rect(sx,230,w-24,h-100),Panel,Border);
-    DrawTextAt(sx+20,249,L"\u041e\u0431\u0440\u0430\u043d\u0438\u0439 \u0440\u0435\u0433\u0456\u043e\u043d",13,White,true);
-    Box(Rect(sx+20,336,w-44,407),RGBColor(24,33,44),Border,12);
-    Dot(sx+37,359,RegionColor(selected));
-    DrawTextAt(sx+51,348,RegionStatusText(selected),10,RegionColor(selected),true);
-    DrawTextAt(sx+35,377,demoMode?UnicodeString(L"\u0414\u0435\u043c\u043e\u043d\u0441\u0442\u0440\u0430\u0446\u0456\u0439\u043d\u0438\u0439 \u0441\u0442\u0430\u0442\u0443\u0441"):(L"\u0414\u0436\u0435\u0440\u0435\u043b\u043e: "+UnicodeString(ApiProviderName(provider))),9,Muted);
-    DrawTextAt(sx+20,415,demoMode?L"\u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430 \u0437\u043c\u0456\u043d\u0430: "+changedAt:L"\u041e\u0441\u0442\u0430\u043d\u043d\u0456\u0439 \u0443\u0441\u043f\u0456\u0445: "+lastSuccess,9,Muted);
-    if(!demoMode) {
-        DrawTextAt(sx+20,566,L"\u041e\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f \u043a\u043e\u0436\u043d\u0456 60 \u0441\u0435\u043a\u0443\u043d\u0434",9,Muted);
-        DrawTextAt(sx+20,587,worker?L"\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f\u2026":authPaused?L"\u0414\u043e\u0441\u0442\u0443\u043f \u043f\u0440\u0438\u0437\u0443\u043f\u0438\u043d\u0435\u043d\u043e":apiToken.empty()?L"\u0422\u043e\u043a\u0435\u043d \u0449\u0435 \u043d\u0435 \u0437\u0430\u0434\u0430\u043d\u043e":L"\u0410\u0432\u0442\u043e\u043e\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f \u0443\u0432\u0456\u043c\u043a\u043d\u0435\u043d\u043e",9,Muted);
-    }
-    DrawTextAt(sx+20,610,L"\u041f\u041e\u0417\u041d\u0410\u0427\u0415\u041d\u041d\u042f",8,Muted,true);
-    const wchar_t* labels[4]={L"\u0422\u0440\u0438\u0432\u043e\u0433\u0430 \u0432 \u0443\u0441\u0456\u0439 \u043e\u0431\u043b\u0430\u0441\u0442\u0456",L"\u0427\u0430\u0441\u0442\u043a\u043e\u0432\u0430 / \u043f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u044f \u0437\u0430\u0433\u0440\u043e\u0437\u0430",L"\u041d\u0435\u043c\u0430\u0454 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0457 \u0442\u0440\u0438\u0432\u043e\u0433\u0438",L"\u041d\u0435\u043c\u0430\u0454 \u0434\u0430\u043d\u0438\u0445"};
-    TColor colors[4]={StateColor(asAlert),RGBColor(244,191,77),StateColor(asClear),StateColor(asUnknown)};
-    for(int i=0;i<4;++i) {
-        Dot(sx+25,640+i*22,colors[i]);
-        DrawTextAt(sx+40,630+i*22,labels[i],9,White);
-    }
-    Box(Rect(24,h-79,w-24,h-24),RGBColor(47,38,26),RGBColor(89,69,38),12);
-    DrawTextAt(42,h-68,demoMode?UnicodeString(L"\u0414\u0415\u041c\u041e\u0420\u0415\u0416\u0418\u041c. \u0412\u0438\u0433\u0430\u0434\u0430\u043d\u0456 \u0434\u0430\u043d\u0456; \u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0456 \u0442\u0440\u0438\u0432\u043e\u0433\u0438 \u043d\u0435 \u0437\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0443\u044e\u0442\u044c\u0441\u044f."):connectionText,10,RGBColor(237,196,127),true);
-    DrawTextAt(42,h-47,L"\u0414\u043b\u044f \u0440\u0456\u0448\u0435\u043d\u044c \u043a\u043e\u0440\u0438\u0441\u0442\u0443\u0439\u0442\u0435\u0441\u044f \u043e\u0444\u0456\u0446\u0456\u0439\u043d\u0438\u043c\u0438 \u0441\u043f\u043e\u0432\u0456\u0449\u0435\u043d\u043d\u044f\u043c\u0438.  |  C++Builder VCL \u00b7 Win32 \u00b7 x86 ASM",8,Muted);
-}
-
-void __fastcall TMainForm::SelectRegion(TObject*) {
-    if(regionBox->ItemIndex>=0) { selected=regionBox->ItemIndex; storage.SaveSelectedRegion(selected); UpdateWebMap(); Invalidate(); }
-}
-void __fastcall TMainForm::ChangeState(TObject*) {
-    if(demoMode && model.Cycle(selected)) { changedAt=FormatDateTime(L"hh:nn:ss",Now()); Invalidate(); }
-}
-void __fastcall TMainForm::ResetDemo(TObject*) {
-    if(!demoMode) return;
-    model.ResetDemo(); changedAt=FormatDateTime(L"hh:nn:ss",Now()); Invalidate();
-}
-void __fastcall TMainForm::UnknownData(TObject*) {
-    if(!demoMode) return;
-    for(int i=0;i<RegionCount;++i) model.states[i]=asUnknown;
-    changedAt=FormatDateTime(L"hh:nn:ss",Now()); Invalidate();
-}
-int TMainForm::HitTest(int x,int y) const {
-    // Cities are tested first because they are small enclaves within oblasts.
-    for(int i=(int)hitRegions.size()-1;i>=0;--i) if(PtInRegion(hitRegions[i],x,y)) return i;
-    return -1;
-}
-void __fastcall TMainForm::MapMouseDown(TObject*,TMouseButton button,TShiftState,int x,int y) {
-    if(button!=mbLeft) return;
-    int index=HitTest(x,y);
-    if(index>=0) { selected=index; regionBox->ItemIndex=selected; storage.SaveSelectedRegion(selected); UpdateWebMap(); Invalidate(); }
-}
-void __fastcall TMainForm::MapMouseMove(TObject*,TShiftState,int x,int y) {
-    int index=HitTest(x,y);
-    Cursor=index>=0?crHandPoint:crDefault;
-    UnicodeString hint=index>=0?UnicodeString(Regions[index].name)+L" \u2014 "+RegionStatusText(index):UnicodeString();
-    if(Hint!=hint) Hint=hint;
-    ShowHint=index>=0;
-}
-void __fastcall TMainForm::KeyPressed(TObject*,WORD &key,TShiftState) {
-    if(demoMode && key=='R' && ActiveControl!=regionBox) { ResetDemo(this); key=0; }
-}
-
-UnicodeString TMainForm::RegionStatusText(int region) const {
-    if(!demoMode && feed.available) {
-        if(feed.snapshot.levels[region]=='P') return L"\u0427\u0430\u0441\u0442\u043a\u043e\u0432\u0430 \u0442\u0440\u0438\u0432\u043e\u0433\u0430";
-        if(feed.snapshot.levels[region]=='Y') return L"\u041f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u044f \u0437\u0430\u0433\u0440\u043e\u0437\u0430";
-    }
-    return StateText(model.states[region]);
-}
-
 void TMainForm::ApplyFeed() {
     for(int i=0;i<RegionCount;++i) model.states[i]=feed.snapshot.states[i];
-    RecordObservation(feed.available);
-    UpdateWebMap();
-    Invalidate();
+    RecordObservation(feed.available); PublishState();
 }
-void TMainForm::UpdateControls() {
-    changeButton->Visible=demoMode;
-    resetButton->Visible=demoMode;
-    clearButton->Visible=demoMode;
-    tokenButton->Visible=!demoMode;
-    refreshButton->Visible=!demoMode;
-    DWORD elapsed=(DWORD)(GetTickCount()-lastAttemptTick);
-    refreshButton->Enabled=!demoMode && !worker && !apiToken.empty() && !authPaused && elapsed>=retryDelay;
-    if(worker) refreshButton->Caption=L"\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f\u2026";
-    else if(!apiToken.empty() && !authPaused && elapsed<retryDelay)
-        refreshButton->Caption=L"\u041e\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f \u0447\u0435\u0440\u0435\u0437 "+IntToStr((int)((retryDelay-elapsed+999)/1000))+L" \u0441";
-    else refreshButton->Caption=L"\u041e\u043d\u043e\u0432\u0438\u0442\u0438 \u0437\u0430\u0440\u0430\u0437";
+void TMainForm::SetMode(bool live) {
+    if(demoMode==!live) return;
+    ++generation; demoMode=!live; feed.Unavailable(); RecordObservation(false);
+    if(demoMode) { model.ResetDemo(); connectionText=L"\u0414\u0435\u043c\u043e\u0440\u0435\u0436\u0438\u043c: \u0432\u0438\u0433\u0430\u0434\u0430\u043d\u0456 \u0441\u0442\u0430\u043d\u0438. \u0417\u0430\u043f\u0438\u0442\u0438 API \u043f\u0440\u0438\u0437\u0443\u043f\u0438\u043d\u0435\u043d\u043e."; }
+    else { for(int i=0;i<RegionCount;++i) model.states[i]=asUnknown; connectionText=L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043d\u0430\u0441\u0442\u0443\u043f\u043d\u043e\u0433\u043e \u0434\u043e\u0437\u0432\u043e\u043b\u0435\u043d\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026"; }
 }
-void __fastcall TMainForm::ModeChanged(TObject*) {
-    ++generation;
-    demoMode=!liveBox->Checked;
-    RecordObservation(false);
-    feed.Unavailable();
-    if(demoMode) ResetDemo(this);
-    else {
-        ApplyFeed();
-        connectionText=apiToken.empty()?L"\u0414\u043e\u0434\u0430\u0439\u0442\u0435 API-\u0442\u043e\u043a\u0435\u043d \u2014 \u0434\u0430\u043d\u0456 \u043f\u043e\u043a\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.":
-            authPaused?L"\u0414\u043e\u0441\u0442\u0443\u043f \u043f\u0440\u0438\u0437\u0443\u043f\u0438\u043d\u0435\u043d\u043e. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u043f\u043e\u0441\u0442\u0430\u0447\u0430\u043b\u044c\u043d\u0438\u043a\u0430 \u043a\u043b\u044e\u0447\u0430 \u0442\u0430 \u0443\u043c\u043e\u0432\u0438 \u0434\u043e\u0441\u0442\u0443\u043f\u0443.":L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043d\u0430\u0441\u0442\u0443\u043f\u043d\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026";
+void TMainForm::SaveSettings(const UiCommand& command) {
+    ++settingsRevision; settingsError=true;
+    std::wstring next=command.token;
+    if(next.empty()) {
+        if(command.provider!=provider || apiToken.empty()) { settingsMessage=L"\u0412\u0432\u0435\u0434\u0456\u0442\u044c \u043a\u043b\u044e\u0447 \u0434\u043b\u044f \u043e\u0431\u0440\u0430\u043d\u043e\u0433\u043e \u043f\u043e\u0441\u0442\u0430\u0447\u0430\u043b\u044c\u043d\u0438\u043a\u0430."; return; }
+        next=apiToken;
     }
-    UpdateControls(); Invalidate();
+    bool stored=command.remember?SaveApiCredential(ApiCredentialTarget,next,command.provider):DeleteApiCredential(ApiCredentialTarget);
+    if(!stored) { settingsMessage=L"Windows \u043d\u0435 \u0437\u043c\u0456\u0433 \u0437\u0431\u0435\u0440\u0435\u0433\u0442\u0438 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f \u043a\u043b\u044e\u0447\u0430. \u041f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u0456 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f \u0437\u0430\u043b\u0438\u0448\u0438\u043b\u0438\u0441\u044f \u0447\u0438\u043d\u043d\u0438\u043c\u0438."; return; }
+    apiToken=next; provider=command.provider; rememberKey=command.remember; keySaved=command.remember;
+    ++generation; authPaused=false; feed.Unavailable(); confirmedAt=0; regionDirectory.clear();
+    if(provider==apUkraineAlarm) storage.LoadDirectory(regionDirectory,UtcSeconds());
+    unsigned remaining=storage.LoadRetry(provider,UtcSeconds());
+    lastAttemptTick=GetTickCount()-(remaining?0:60000UL); retryDelay=remaining?remaining*1000UL:60000UL;
+    settingsError=false; settingsMessage=keySaved?UnicodeString(L"\u041a\u043b\u044e\u0447 \u0456 \u043f\u043e\u0441\u0442\u0430\u0447\u0430\u043b\u044c\u043d\u0438\u043a \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u0456 \u0443 Windows."):UnicodeString(L"\u041a\u043b\u044e\u0447 \u0437\u0430\u0441\u0442\u043e\u0441\u043e\u0432\u0430\u043d\u043e \u043b\u0438\u0448\u0435 \u0434\u043b\u044f \u043f\u043e\u0442\u043e\u0447\u043d\u043e\u0433\u043e \u0441\u0435\u0430\u043d\u0441\u0443.");
+    connectionText=L"\u041d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f \u0437\u0430\u0441\u0442\u043e\u0441\u043e\u0432\u0430\u043d\u043e. \u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u0434\u043e\u0437\u0432\u043e\u043b\u0435\u043d\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 API\u2026";
+    if(!demoMode) ApplyFeed();
 }
-void __fastcall TMainForm::EditToken(TObject*) {
-    TForm* dialog=new TForm(this,0);
+void __fastcall TMainForm::Command(TObject*,const UnicodeString& message) {
+    UiCommand command;
+    if(!ParseUiCommand(message,command)) {
+        ++settingsRevision; settingsError=true; settingsMessage=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0430\u0441\u0442\u043e\u0441\u0443\u0432\u0430\u0442\u0438 \u0434\u0456\u044e: \u043f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0444\u043e\u0440\u043c\u0430\u0442 \u0432\u0432\u0435\u0434\u0435\u043d\u0438\u0445 \u0434\u0430\u043d\u0438\u0445."; PublishState(); return;
+    }
     try {
-        dialog->Caption=L"\u041f\u0456\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043d\u044f API";
-        dialog->BorderStyle=bsDialog;
-        dialog->Position=poOwnerFormCenter;
-        dialog->ClientWidth=480; dialog->ClientHeight=310;
-        TLabel* label=new TLabel(dialog); label->Parent=dialog;
-        label->SetBounds(20,16,440,44); label->AutoSize=false; label->WordWrap=true;
-        label->Caption=L"\u041e\u0431\u0435\u0440\u0456\u0442\u044c \u0441\u0435\u0440\u0432\u0456\u0441, \u044f\u043a\u0438\u0439 \u0432\u0438\u0434\u0430\u0432 \u0432\u0430\u0448 \u043a\u043b\u044e\u0447. \u041a\u043b\u044e\u0447\u0456 \u0440\u0456\u0437\u043d\u0438\u0445 \u0441\u0435\u0440\u0432\u0456\u0441\u0456\u0432 \u043d\u0435 \u0432\u0437\u0430\u0454\u043c\u043e\u0437\u0430\u043c\u0456\u043d\u043d\u0456.";
-        TComboBox* sourceBox=new TComboBox(dialog); sourceBox->Parent=dialog;
-        sourceBox->SetBounds(20,68,440,28); sourceBox->Style=csDropDownList;
-        sourceBox->Items->Add(L"alerts.in.ua"); sourceBox->Items->Add(L"UkraineAlarm / Stfalcon");
-        sourceBox->ItemIndex=(int)provider;
-        TEdit* edit=new TEdit(dialog); edit->Parent=dialog;
-        edit->SetBounds(20,116,440,26); edit->PasswordChar=L'*'; edit->MaxLength=2048;
-        edit->Text=apiToken.c_str();
-        TCheckBox* remember=new TCheckBox(dialog); remember->Parent=dialog;
-        remember->SetBounds(20,154,440,24); remember->Caption=L"\u0417\u0431\u0435\u0440\u0456\u0433\u0430\u0442\u0438 \u043a\u043b\u044e\u0447 \u043d\u0430 \u0446\u044c\u043e\u043c\u0443 \u043a\u043e\u043c\u043f\u2019\u044e\u0442\u0435\u0440\u0456";
-        remember->Checked=rememberKey;
-        TLabel* help=new TLabel(dialog); help->Parent=dialog;
-        help->SetBounds(20,190,440,48); help->AutoSize=false; help->WordWrap=true;
-        help->Caption=L"\u041a\u043b\u044e\u0447 \u0437\u0431\u0435\u0440\u0456\u0433\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u0437\u0430\u0445\u0438\u0449\u0435\u043d\u043e\u043c\u0443 \u0441\u0445\u043e\u0432\u0438\u0449\u0456 Windows. \u0417\u043d\u0456\u043c\u0456\u0442\u044c \u043f\u0440\u0430\u043f\u043e\u0440\u0435\u0446\u044c \u0456 \u0437\u0430\u0441\u0442\u043e\u0441\u0443\u0439\u0442\u0435 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f, \u0449\u043e\u0431 \u0437\u0430\u043b\u0438\u0448\u0438\u0442\u0438 \u0439\u043e\u0433\u043e \u043b\u0438\u0448\u0435 \u043d\u0430 \u0446\u0435\u0439 \u0441\u0435\u0430\u043d\u0441.";
-        TButton* ok=new TButton(dialog); ok->Parent=dialog;
-        ok->SetBounds(230,260,110,32); ok->Caption=L"\u0417\u0430\u0441\u0442\u043e\u0441\u0443\u0432\u0430\u0442\u0438"; ok->ModalResult=mrOk; ok->Default=true;
-        TButton* cancel=new TButton(dialog); cancel->Parent=dialog;
-        cancel->SetBounds(350,260,110,32); cancel->Caption=L"\u0421\u043a\u0430\u0441\u0443\u0432\u0430\u0442\u0438"; cancel->ModalResult=mrCancel; cancel->Cancel=true;
-        dialog->ActiveControl=edit;
-        if(dialog->ShowModal()==mrOk) {
-            std::wstring next=edit->Text.Trim().c_str();
-            if(!IsValidApiToken(next)) {
-                Application->MessageBox(L"\u0412\u0432\u0435\u0434\u0456\u0442\u044c \u0442\u043e\u043a\u0435\u043d \u0431\u0435\u0437 \u043f\u0440\u043e\u0431\u0456\u043b\u0456\u0432 \u0456 \u043f\u0435\u0440\u0435\u043d\u043e\u0441\u0456\u0432 \u0440\u044f\u0434\u043a\u0430.",L"\u041d\u0435\u043a\u043e\u0440\u0435\u043a\u0442\u043d\u0438\u0439 \u0442\u043e\u043a\u0435\u043d",MB_OK|MB_ICONINFORMATION);
-                return;
-            }
-            ApiProvider nextProvider=(ApiProvider)sourceBox->ItemIndex;
-            bool stored=remember->Checked?SaveApiCredential(ApiCredentialTarget,next,nextProvider):DeleteApiCredential(ApiCredentialTarget);
-            if(!stored) {
-                Application->MessageBox(L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u043c\u0456\u043d\u0438\u0442\u0438 \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u0438\u0439 \u043a\u043b\u044e\u0447 \u0443 Windows. \u041d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f \u043d\u0435 \u0437\u0430\u0441\u0442\u043e\u0441\u043e\u0432\u0430\u043d\u043e.",L"\u0417\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u043d\u044f \u043a\u043b\u044e\u0447\u0430",MB_OK|MB_ICONERROR);
-                return;
-            }
-            rememberKey=remember->Checked;
-            apiToken=next; provider=nextProvider; regionDirectory.clear();
-            if(provider==apUkraineAlarm) storage.LoadDirectory(regionDirectory,UtcSeconds());
-            unsigned remaining=storage.LoadRetry(provider,UtcSeconds());
-            lastAttemptTick=GetTickCount()-(remaining?0:60000UL);
-            retryDelay=remaining?remaining*1000UL:60000UL;
-            ++generation; authPaused=false; feed.Unavailable(); ApplyFeed();
-            connectionText=L"\u0422\u043e\u043a\u0435\u043d \u0437\u0430\u0434\u0430\u043d\u043e. \u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026";
-            UpdateControls();
+        switch(command.type) {
+            case ucReady: break;
+            case ucSelect: selected=command.region; storage.SaveSelectedRegion(selected); break;
+            case ucRefresh: StartRequest(); break;
+            case ucMode: SetMode(command.live); break;
+            case ucSaveSettings: SaveSettings(command); break;
+            case ucForgetKey:
+                ++settingsRevision;
+                if(!DeleteApiCredential(ApiCredentialTarget)) { settingsError=true; settingsMessage=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0438\u0434\u0430\u043b\u0438\u0442\u0438 \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u0438\u0439 \u043a\u043b\u044e\u0447 \u0443 Windows."; break; }
+                ++generation; apiToken.clear(); keySaved=false; rememberKey=false; authPaused=false; feed.Unavailable(); confirmedAt=0;
+                settingsError=false; settingsMessage=L"\u041a\u043b\u044e\u0447 \u0432\u0438\u0434\u0430\u043b\u0435\u043d\u043e. \u0414\u043b\u044f \u043f\u0456\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043d\u044f \u0432\u0432\u0435\u0434\u0456\u0442\u044c \u043d\u043e\u0432\u0438\u0439 \u043a\u043b\u044e\u0447.";
+                connectionText=L"\u0414\u043e\u0434\u0430\u0439\u0442\u0435 API-\u043a\u043b\u044e\u0447 \u0443 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f\u0445."; if(!demoMode) ApplyFeed(); break;
+            case ucDemoReset: if(demoMode) model.ResetDemo(); break;
+            case ucDemoCycle: if(demoMode) model.Cycle(selected); break;
+            case ucDemoUnknown: if(demoMode) for(int i=0;i<RegionCount;++i) model.states[i]=asUnknown; break;
+            case ucHistory: LoadHistory(command.days); break;
+            case ucExport: ExportReport(command.format); break;
+            default: break;
         }
-    } __finally { delete dialog; }
+    } catch(...) { ++settingsRevision; settingsError=true; settingsMessage=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0438\u043a\u043e\u043d\u0430\u0442\u0438 \u0434\u0456\u044e. \u041f\u043e\u0432\u0442\u043e\u0440\u0456\u0442\u044c \u0441\u043f\u0440\u043e\u0431\u0443."; }
+    PublishState();
+}
+void TMainForm::LoadHistory(int days) {
+    if(reportWorker) return;
+    historyDays=days; historyJson=L""; historyError=L""; historyGeneratedAt=0;
+    UnicodeString script=ExtractFilePath(Application->ExeName)+L"analytics\\analyze.py";
+    if(!FileExists(script)) { historyError=L"\u041d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e \u043c\u043e\u0434\u0443\u043b\u044c \u0430\u043d\u0430\u043b\u0456\u0442\u0438\u043a\u0438. \u041f\u043e\u0432\u0442\u043e\u0440\u0456\u0442\u044c \u0437\u0431\u0456\u0440\u043a\u0443 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438."; return; }
+    __int64 since=days?UtcSeconds()-(__int64)days*86400:0;
+    reportWorker=new TReportWorker(script.c_str(),storage.Folder(),Regions[selected].iso,since);
+    reportWorker->Start();
+}
+void TMainForm::PollReport() {
+    if(!reportWorker || WaitForSingleObject((HANDLE)reportWorker->Handle,0)!=WAIT_OBJECT_0) return;
+    unsigned long error=reportWorker->Error;
+    delete reportWorker; reportWorker=0;
+    if(error) { historyError=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0440\u043e\u0437\u0440\u0430\u0445\u0443\u0432\u0430\u0442\u0438 \u0456\u0441\u0442\u043e\u0440\u0456\u044e. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0432\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f Python 3.10 \u0430\u0431\u043e \u043d\u043e\u0432\u0456\u0448\u043e\u0433\u043e \u0442\u0430 \u0434\u043e\u0441\u0442\u0443\u043f \u0434\u043e \u043f\u0430\u043f\u043a\u0438 \u0434\u0430\u043d\u0438\u0445."; return; }
+    FILE* file=_wfopen((storage.Folder()+L"\\reports\\history.json").c_str(),L"rb");
+    if(!file) { historyError=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0456\u0434\u043a\u0440\u0438\u0442\u0438 \u0440\u043e\u0437\u0440\u0430\u0445\u043e\u0432\u0430\u043d\u0443 \u0456\u0441\u0442\u043e\u0440\u0456\u044e."; return; }
+    std::string body; char buffer[4096];
+    while(!feof(file) && body.size()<=2*1024*1024) { unsigned count=fread(buffer,1,sizeof(buffer),file); body.append(buffer,count); if(!count) break; }
+    bool valid=!ferror(file) && body.size()<=2*1024*1024; fclose(file);
+    if(valid) {
+        std::auto_ptr<TJSONValue> value(TJSONObject::ParseJSONValue(UTF8String(body.c_str(),body.size()),false,false));
+        if(dynamic_cast<TJSONObject*>(value.get())) { historyJson=value->ToJSON(); historyGeneratedAt=UtcSeconds(); return; }
+    }
+    historyError=L"\u0417\u0432\u0456\u0442 \u043c\u0456\u0441\u0442\u0438\u0442\u044c \u043d\u0435\u043a\u043e\u0440\u0435\u043a\u0442\u043d\u0456 \u0434\u0430\u043d\u0456. \u0421\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u0435\u0440\u0435\u0440\u0430\u0445\u0443\u0432\u0430\u0442\u0438 \u0456\u0441\u0442\u043e\u0440\u0456\u044e.";
+}
+void TMainForm::ExportReport(const std::string& format) {
+    if(reportWorker || historyJson.IsEmpty() || !historyError.IsEmpty()) return;
+    std::auto_ptr<TSaveDialog> dialog(new TSaveDialog(this));
+    UnicodeString extension(format.c_str());
+    dialog->Title=L"\u0415\u043a\u0441\u043f\u043e\u0440\u0442 \u0456\u0441\u0442\u043e\u0440\u0456\u0457"; dialog->DefaultExt=extension;
+    dialog->FileName=L"AirAlertMap-history."+extension;
+    dialog->Filter=extension+L"|*."+extension;
+    dialog->Options=dialog->Options<<ofOverwritePrompt<<ofPathMustExist;
+    if(dialog->Execute()) {
+        UnicodeString source=UnicodeString(storage.Folder().c_str())+L"\\reports\\history."+extension;
+        ++settingsRevision;
+        settingsError=CopyFileW(source.c_str(),dialog->FileName.c_str(),FALSE)==FALSE;
+        settingsMessage=settingsError?UnicodeString(L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0431\u0435\u0440\u0435\u0433\u0442\u0438 \u0444\u0430\u0439\u043b. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0434\u043e\u0441\u0442\u0443\u043f \u0434\u043e \u043f\u0430\u043f\u043a\u0438."):UnicodeString(L"\u0424\u0430\u0439\u043b \u0456\u0441\u0442\u043e\u0440\u0456\u0457 \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u043e.");
+    }
 }
 void TMainForm::StartRequest() {
     if(demoMode || worker || apiToken.empty() || authPaused || (DWORD)(GetTickCount()-lastAttemptTick)<retryDelay) return;
@@ -436,19 +174,10 @@ void TMainForm::StartRequest() {
         delete worker; worker=0; feed.Unavailable(); ApplyFeed();
         connectionText=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0438 \u0437\u0430\u043f\u0438\u0442. \u041f\u043e\u0432\u0442\u043e\u0440 \u0447\u0435\u0440\u0435\u0437 \u0445\u0432\u0438\u043b\u0438\u043d\u0443.";
     }
-    UpdateControls(); Invalidate();
+    PublishState();
 }
-void __fastcall TMainForm::RefreshFeed(TObject*) { StartRequest(); }
 void __fastcall TMainForm::FeedTick(TObject*) {
-    if(reportWorker && WaitForSingleObject((HANDLE)reportWorker->Handle,0)==WAIT_OBJECT_0) {
-        unsigned long error=reportWorker->Error;
-        std::wstring report=reportWorker->Report;
-        delete reportWorker; reportWorker=0; historyButton->Enabled=true;
-        if(!error) {
-            HINSTANCE opened=ShellExecuteW(Handle,L"open",report.c_str(),NULL,NULL,SW_SHOWNORMAL);
-            if((INT_PTR)opened<=32) Application->MessageBox(report.c_str(),L"\u0417\u0432\u0456\u0442 \u0456\u0441\u0442\u043e\u0440\u0456\u0457 \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u043e",MB_OK|MB_ICONINFORMATION);
-        } else Application->MessageBox(L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0441\u0442\u0432\u043e\u0440\u0438\u0442\u0438 \u0437\u0432\u0456\u0442. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u043d\u0430\u044f\u0432\u043d\u0456\u0441\u0442\u044c Python 3.10 \u0430\u0431\u043e \u043d\u043e\u0432\u0456\u0448\u043e\u0433\u043e \u0432 PATH \u0442\u0430 \u043f\u0430\u043f\u043a\u0438 analytics \u043f\u043e\u0440\u0443\u0447 \u0456\u0437 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043e\u044e.",L"\u0406\u0441\u0442\u043e\u0440\u0456\u044f \u0442\u0430 \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430",MB_OK|MB_ICONINFORMATION);
-    }
+    PollReport();
     if(worker && WaitForSingleObject((HANDLE)worker->Handle,0)==WAIT_OBJECT_0) {
         ApiResult result=worker->result;
         ApiProvider resultProvider=worker->Source();
@@ -493,7 +222,7 @@ void __fastcall TMainForm::FeedTick(TObject*) {
             }
             ApplyFeed();
         }
-        Invalidate();
+
     }
     if(!demoMode) {
         if(feed.Expire(GetTickCount())) {
@@ -502,45 +231,44 @@ void __fastcall TMainForm::FeedTick(TObject*) {
         }
         StartRequest();
     }
-    UpdateControls();
-    UpdateWebMap();
+    PublishState();
 }
 
-void TMainForm::RecordObservation(bool available) {
-    historyOk=storage.AppendObservation(feed.snapshot,available && !demoMode,provider,UtcSeconds());
-    if(historyButton) {
-        historyButton->ShowHint=!historyOk;
-        historyButton->Hint=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0430\u043f\u0438\u0441\u0430\u0442\u0438 \u0456\u0441\u0442\u043e\u0440\u0456\u044e. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0432\u0456\u043b\u044c\u043d\u0435 \u043c\u0456\u0441\u0446\u0435 \u0442\u0430 \u043f\u0440\u0430\u0432\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u0443 \u0434\u043e \u043f\u0430\u043f\u043a\u0438 \u0434\u0430\u043d\u0438\u0445 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438.";
-    }
-}
-void TMainForm::UpdateWebMap() {
-    if(!webMap) return;
+void TMainForm::PublishState() {
+    std::auto_ptr<TJSONObject> state(new TJSONObject());
     AlertSnapshot value=feed.snapshot;
     if(demoMode) for(int i=0;i<RegionCount;++i) { value.states[i]=model.states[i]; value.levels[i]='R'; }
-    char stamp[40]; sprintf(stamp,"%I64d",confirmedAt);
-    std::string json=std::string("{\"levels\":\"")+PublicLevels(value,demoMode||feed.available)+"\",\"available\":"+
-        (feed.available?"true":"false")+",\"demo\":"+(demoMode?"true":"false")+",\"provider\":\""+
-        (provider==apUkraineAlarm?"ukrainealarm":"alerts.in.ua")+"\",\"at\":"+stamp+",\"selected\":";
-    char index[8]; sprintf(index,"%d",selected); json+=std::string(index)+"}";
-    webMap->UpdateSnapshot(UnicodeString(json.c_str()));
-}
-void __fastcall TMainForm::OpenWebMap(TObject*) {
-    if(!webMap) {
-        UnicodeString page=ExtractFilePath(Application->ExeName)+L"web\\index.html";
-        if(!FileExists(page)) { Application->MessageBox(L"\u041d\u0435\u043c\u0430\u0454 \u043f\u0430\u043f\u043a\u0438 web \u043f\u043e\u0440\u0443\u0447 \u0456\u0437 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043e\u044e. \u041f\u043e\u0432\u0442\u043e\u0440\u0456\u0442\u044c \u0437\u0431\u0456\u0440\u043a\u0443 \u043f\u0440\u043e\u0454\u043a\u0442\u0443.",L"\u0406\u043d\u0442\u0435\u0440\u0430\u043a\u0442\u0438\u0432\u043d\u0430 \u043c\u0430\u043f\u0430",MB_OK|MB_ICONINFORMATION); return; }
-        webMap=new TWebMapForm(this,page,UnicodeString(storage.Folder().c_str())+L"\\WebView2");
-        webMap->OnRegionSelected=WebRegionSelected;
-    }
-    UpdateWebMap(); webMap->Show(); webMap->BringToFront();
-}
-void __fastcall TMainForm::WebRegionSelected(TObject*) {
-    selected=webMap->SelectedRegion; regionBox->ItemIndex=selected;
-    storage.SaveSelectedRegion(selected); UpdateWebMap(); Invalidate();
-}
-void __fastcall TMainForm::OpenHistory(TObject*) {
-    if(reportWorker) return;
-    UnicodeString script=ExtractFilePath(Application->ExeName)+L"analytics\\analyze.py";
-    if(!FileExists(script)) { Application->MessageBox(L"\u041d\u0435\u043c\u0430\u0454 \u043f\u0430\u043f\u043a\u0438 analytics \u043f\u043e\u0440\u0443\u0447 \u0456\u0437 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043e\u044e. \u041f\u043e\u0432\u0442\u043e\u0440\u0456\u0442\u044c \u0437\u0431\u0456\u0440\u043a\u0443 \u043f\u0440\u043e\u0454\u043a\u0442\u0443.",L"\u0406\u0441\u0442\u043e\u0440\u0456\u044f \u0442\u0430 \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430",MB_OK|MB_ICONINFORMATION); return; }
-    reportWorker=new TReportWorker(script.c_str(),storage.Folder(),Regions[selected].iso);
-    historyButton->Enabled=false; reportWorker->Start();
+    std::string levels=PublicLevels(value,demoMode||feed.available);
+    DWORD elapsed=(DWORD)(GetTickCount()-lastAttemptTick);
+    unsigned remaining=elapsed<retryDelay?(retryDelay-elapsed+999)/1000:0;
+    state->AddPair(L"version",new TJSONNumber(1));
+    state->AddPair(L"levels",UnicodeString(levels.c_str()));
+    state->AddPair(L"available",new TJSONBool(feed.available && !demoMode));
+    state->AddPair(L"demo",new TJSONBool(demoMode));
+    state->AddPair(L"provider",UnicodeString(provider==apUkraineAlarm?L"ukrainealarm":L"alerts.in.ua"));
+    state->AddPair(L"selected",new TJSONNumber(selected));
+    state->AddPair(L"at",new TJSONNumber(confirmedAt));
+    state->AddPair(L"now",new TJSONNumber(UtcSeconds()));
+    state->AddPair(L"activeCount",new TJSONNumber(model.Count(asAlert)));
+    state->AddPair(L"clearCount",new TJSONNumber(model.Count(asClear)));
+    state->AddPair(L"unknownCount",new TJSONNumber(model.Count(asUnknown)));
+    state->AddPair(L"connectionText",connectionText);
+    state->AddPair(L"loading",new TJSONBool(worker!=0));
+    state->AddPair(L"authPaused",new TJSONBool(authPaused));
+    state->AddPair(L"retrySeconds",new TJSONNumber(remaining));
+    state->AddPair(L"refreshAllowed",new TJSONBool(!demoMode && !worker && !apiToken.empty() && !authPaused && !remaining));
+    state->AddPair(L"keyConfigured",new TJSONBool(!apiToken.empty()));
+    state->AddPair(L"keySaved",new TJSONBool(keySaved));
+    state->AddPair(L"remember",new TJSONBool(rememberKey));
+    state->AddPair(L"settingsRevision",new TJSONNumber(settingsRevision));
+    state->AddPair(L"settingsMessage",settingsMessage);
+    state->AddPair(L"settingsError",new TJSONBool(settingsError));
+    state->AddPair(L"historyLoading",new TJSONBool(reportWorker!=0));
+    state->AddPair(L"historyError",historyError);
+    state->AddPair(L"historyDays",new TJSONNumber(historyDays));
+    state->AddPair(L"historyOk",new TJSONBool(historyOk));
+    state->AddPair(L"historyGeneratedAt",new TJSONNumber(historyGeneratedAt));
+    if(!historyJson.IsEmpty()) state->AddPair(L"history",TJSONObject::ParseJSONValue(historyJson,false,false));
+    else state->AddPair(L"history",new TJSONNull());
+    UpdateSnapshot(state->ToJSON());
 }

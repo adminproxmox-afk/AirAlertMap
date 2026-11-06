@@ -17,7 +17,7 @@
   const option=document.createElement('option');option.value=region.index;option.textContent=region.name;$('region-select').append(option);
   return path;
  });
- function notify() {window.chrome?.webview?.postMessage('select:'+selected);}
+ function notify() {window.appBridge?.select(selected);}
  function select(index,send=true) {
   if(!Number.isInteger(index)||index<0||index>=27)return;
   selected=index;$('region-select').value=String(index);$('region-name').textContent=data[index].name;
@@ -33,8 +33,6 @@
   const level=levels[selected],status=$('region-status');status.textContent=texts[level];status.className='status '+(level==='R'?'red':level==='N'?'clear':level==='?'?'unknown':'amber');
   const active=[...levels].filter(x=>'RPY'.includes(x)).length,known=[...levels].filter(x=>x!=='?').length;
   $('counts').textContent=`${active} із тривогою / загрозою · ${27-known} без даних`;
-  $('connection').textContent=observed?.demo?'ДЕМО · Вигадані дані':fresh?'Дані API отримано':observed?'Очікування свіжих даних API':'Очікування даних від програми';
-  $('mode').textContent=observed?.demo?'ДЕМОРЕЖИМ':'Актуальні дані';
   $('source').textContent='Джерело: '+(observed?.provider==='ukrainealarm'?'UkraineAlarm / Stfalcon':observed?.provider==='alerts.in.ua'?'alerts.in.ua':'ще не підключено');
   $('updated').textContent=observed?.at?'Останнє підтвердження: '+new Date(observed.at*1000).toLocaleString('uk-UA'):'Підтвердження ще не отримано';
  }

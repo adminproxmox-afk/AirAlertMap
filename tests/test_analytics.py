@@ -87,5 +87,22 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(report["rows"][0]["unknown"],60)
         self.assertEqual(report["rows"][0]["clear"],0)
 
+    def test_period_clips_interval_without_losing_baseline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"history-2026-11.jsonl"
+            path.write_text("\n".join(json.dumps(x) for x in [self.sample(100),self.sample(160,"R"),self.sample(220)]),encoding="utf-8")
+            report=analysis.analyze([path],since=130)
+            self.assertEqual((report["first"],report["last"],report["window_seconds"]),(130,220,90))
+            self.assertEqual((report["rows"][0]["clear"],report["rows"][0]["red"],report["rows"][0]["starts"]),(30,60,1))
+
+    def test_period_does_not_extend_an_old_confirmation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"history-2026-11.jsonl"
+            path.write_text("\n".join(json.dumps(x) for x in [self.sample(100),self.sample(400)]),encoding="utf-8")
+            report=analysis.analyze([path],since=250)
+            self.assertEqual((report["rows"][0]["clear"],report["rows"][0]["unknown"]),(0,150))
+            empty=analysis.analyze([path],since=500)
+            self.assertEqual((empty["observations"],empty["window_seconds"]),(0,0))
+
 if __name__ == "__main__":
     unittest.main()

@@ -65,8 +65,8 @@ static std::wstring FindPython() {
     }
     return found;
 }
-__fastcall TReportWorker::TReportWorker(const std::wstring& scriptPath,const std::wstring& folder,const std::string& iso)
- : TThread(true),script(scriptPath),history(folder),output(folder+L"\\reports"),Error(0) {
+__fastcall TReportWorker::TReportWorker(const std::wstring& scriptPath,const std::wstring& folder,const std::string& iso,__int64 periodStart)
+ : TThread(true),script(scriptPath),history(folder),output(folder+L"\\reports"),since(periodStart),Error(0) {
     FreeOnTerminate=false;
     for(unsigned i=0;i<iso.size();++i) region+=(wchar_t)iso[i];
     Report=output+L"\\history.html";
@@ -77,6 +77,7 @@ void __fastcall TReportWorker::Execute() {
         if(executable.empty()) { Error=ERROR_FILE_NOT_FOUND; return; }
         std::wstring command=std::wstring(L"\"")+executable+L"\" -I \""+script+L"\" --history \""+history+
             L"\" --output \""+output+L"\" --region \""+region+L"\"";
+        if(since>0) { wchar_t number[40]; swprintf(number,L"%I64d",since); command+=std::wstring(L" --since ")+number; }
         std::vector<wchar_t> environment;
         wchar_t* inherited=GetEnvironmentStringsW();
         if(!inherited) { Error=GetLastError(); return; }

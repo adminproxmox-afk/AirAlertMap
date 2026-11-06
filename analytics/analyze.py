@@ -18,7 +18,7 @@ def valid_record(record):
             and isinstance(record.get("levels"), str) and len(record["levels"]) == 27
             and set(record["levels"]) <= LEVELS.keys())
 
-def analyze(paths):
+def analyze(paths, since=None):
     records, rejected = [], 0
     for path in sorted(paths):
         with Path(path).open(encoding="utf-8", errors="replace") as source:
@@ -36,22 +36,27 @@ def analyze(paths):
                 records.append(record)
     records.sort(key=lambda r: r["at"])
     # Stable ordering preserves outage boundaries even at the same timestamp.
+    if records and since is not None and since > records[-1]["at"]:
+        records = []
+    first = max(records[0]["at"], since or 0) if records else None
+    last = records[-1]["at"] if records else None
     rows = [dict(index=i, clear=0, red=0, partial=0, threat=0, unknown=0, starts=0) for i in range(27)]
     for previous, current in zip(records, records[1:]):
-        delta = current["at"] - previous["at"]
+        if current["at"] < first:
+            continue
+        lower = max(previous["at"], first)
+        delta = current["at"] - lower
         same_source = previous["provider"] == current["provider"]
-        confirmed = min(delta, 90) if previous["available"] and same_source else 0
+        confirmed = max(0, min(current["at"], previous["at"] + 90) - lower) if previous["available"] and same_source else 0
         for i, row in enumerate(rows):
             level = previous["levels"][i]
             row[LEVELS[level]] += confirmed
             row["unknown"] += delta - confirmed
-            if (same_source and 0 < delta <= 90 and previous["available"] and current["available"]
+            if (same_source and 0 < current["at"] - previous["at"] <= 90 and previous["available"] and current["available"]
                     and level == "N" and current["levels"][i] in "RPY"):
                 row["starts"] += 1
-    return dict(rows=rows, rejected=rejected, observations=len(records),
-                first=records[0]["at"] if records else None,
-                last=records[-1]["at"] if records else None,
-                window_seconds=records[-1]["at"]-records[0]["at"] if records else 0)
+    return dict(rows=rows, rejected=rejected, observations=sum(r["at"] >= first for r in records),
+                first=first, last=last, window_seconds=last-first if records else 0)
 
 def duration(seconds):
     hours, rest = divmod(seconds, 3600)
@@ -107,6 +112,7 @@ def main():
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--region")
+    parser.add_argument("--since", type=int)
     args = parser.parse_args()
     try:
         regions = json.loads((Path(__file__).resolve().parents[1] / "data/regions.json").read_text(encoding="utf-8"))
@@ -114,7 +120,9 @@ def main():
             raise ValueError("Invalid region metadata or selected region")
         if not args.history.is_dir():
             raise ValueError("History directory does not exist")
-        summary = analyze(args.history.glob("history-*.jsonl"))
+        if args.since is not None and args.since < 0:
+            raise ValueError("Period start must be a nonnegative UTC timestamp")
+        summary = analyze(args.history.glob("history-*.jsonl"), since=args.since)
         write_reports(summary, regions, args.output, args.region)
     except (OSError, ValueError, KeyError) as error:
         print(f"Cannot create history report: {error}", file=sys.stderr)

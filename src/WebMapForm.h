@@ -4,6 +4,7 @@
 #include <Vcl.StdCtrls.hpp>
 #include <Vcl.Edge.hpp>
 
+typedef void __fastcall (__closure *TWebCommandEvent)(TObject* Sender,const UnicodeString& message);
 class TWebMapForm : public TForm {
     Vcl::Edge::TEdgeBrowser* browser;
     TLabel* notice;
@@ -16,8 +17,7 @@ class TWebMapForm : public TForm {
     void __fastcall NewWindow(Vcl::Edge::TCustomEdgeBrowser* Sender,Vcl::Edge::TNewWindowRequestedEventArgs* args);
     void __fastcall Message(Vcl::Edge::TCustomEdgeBrowser* Sender,Vcl::Edge::TWebMessageReceivedEventArgs* args);
 public:
-    int SelectedRegion;
-    TNotifyEvent OnRegionSelected;
+    TWebCommandEvent OnCommand;
     __fastcall TWebMapForm(TComponent* owner,const UnicodeString& page,const UnicodeString& profile);
     void UpdateSnapshot(const UnicodeString& json);
 };

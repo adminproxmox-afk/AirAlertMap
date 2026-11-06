@@ -7,10 +7,10 @@
 #pragma package(smart_init)
 
 __fastcall TWebMapForm::TWebMapForm(TComponent* owner,const UnicodeString& page,const UnicodeString& profile)
- : TForm(owner,0),browser(0),notice(0),ready(false),SelectedRegion(7),OnRegionSelected(0) {
+ : TForm(owner),browser(0),notice(0),ready(false),OnCommand(0) {
     Caption=L"AirAlertMap | \u0406\u043d\u0442\u0435\u0440\u0430\u043a\u0442\u0438\u0432\u043d\u0430 \u043c\u0430\u043f\u0430";
     Width=1280; Height=850; Position=poOwnerFormCenter;
-    Constraints->MinWidth=800; Constraints->MinHeight=640;
+    Constraints->MinWidth=820; Constraints->MinHeight=620;
     Color=(TColor)0x201810;
     notice=new TLabel(this); notice->Parent=this; notice->Align=alClient;
     notice->WordWrap=true; notice->Font->Name=L"Segoe UI"; notice->Font->Size=13;
@@ -32,7 +32,7 @@ __fastcall TWebMapForm::TWebMapForm(TComponent* owner,const UnicodeString& page,
 void __fastcall TWebMapForm::Created(Vcl::Edge::TCustomEdgeBrowser*,HRESULT result) {
     if(FAILED(result)) {
         browser->Visible=false;
-        notice->Caption=L"\u0414\u043b\u044f \u0456\u043d\u0442\u0435\u0440\u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0457 \u043c\u0430\u043f\u0438 \u043f\u043e\u0442\u0440\u0456\u0431\u043d\u0456 Microsoft Edge WebView2 Runtime \u0442\u0430 WebView2Loader.dll \u043f\u043e\u0440\u0443\u0447 \u0456\u0437 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043e\u044e. \u0417\u0432\u0438\u0447\u0430\u0439\u043d\u0430 \u043c\u0430\u043f\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0432 \u0433\u043e\u043b\u043e\u0432\u043d\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456.";
+        notice->Caption=L"\u0414\u043b\u044f \u0456\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441\u0443 \u043f\u043e\u0442\u0440\u0456\u0431\u0435\u043d Microsoft Edge WebView2 Runtime \u0442\u0430 WebView2Loader.dll \u043f\u043e\u0440\u0443\u0447 \u0456\u0437 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043e\u044e. \u0412\u0441\u0442\u0430\u043d\u043e\u0432\u0456\u0442\u044c Runtime \u0430\u0431\u043e \u043f\u043e\u0432\u0442\u043e\u0440\u0456\u0442\u044c \u0437\u0431\u0456\u0440\u043a\u0443.";
         return;
     }
     browser->DefaultContextMenusEnabled=false;
@@ -54,7 +54,7 @@ void __fastcall TWebMapForm::NewWindow(Vcl::Edge::TCustomEdgeBrowser*,Vcl::Edge:
 void __fastcall TWebMapForm::Navigated(Vcl::Edge::TCustomEdgeBrowser*,bool success,Winapi::Webview2::COREWEBVIEW2_WEB_ERROR_STATUS) {
     ready=success && browser->LocationURL==localUri;
     notice->Visible=!ready;
-    if(ready && !snapshot.IsEmpty()) browser->ExecuteScript(L"window.airAlert && window.airAlert.update("+snapshot+L");");
+    if(ready && !snapshot.IsEmpty()) browser->DefaultInterface->PostWebMessageAsJson(const_cast<wchar_t*>(snapshot.c_str()));
 }
 void __fastcall TWebMapForm::Message(Vcl::Edge::TCustomEdgeBrowser*,Vcl::Edge::TWebMessageReceivedEventArgs* args) {
     wchar_t* source=NULL; wchar_t* message=NULL;
@@ -62,14 +62,11 @@ void __fastcall TWebMapForm::Message(Vcl::Edge::TCustomEdgeBrowser*,Vcl::Edge::T
     bool allowed=ready && UnicodeString(source)==localUri; CoTaskMemFree(source);
     if(!allowed || FAILED(args->ArgsInterface->TryGetWebMessageAsString(message))) return;
     UnicodeString text(message); CoTaskMemFree(message);
-    if(text.SubString(1,7)!=L"select:") return;
-    int index=StrToIntDef(text.SubString(8,8),-1);
-    if(index<0 || index>=27 || text!=L"select:"+IntToStr(index)) return;
-    SelectedRegion=index;
-    if(OnRegionSelected) OnRegionSelected(this);
+    if(text.Length()>8192) return;
+    if(OnCommand) OnCommand(this,text);
 }
 void TWebMapForm::UpdateSnapshot(const UnicodeString& json) {
     if(snapshot==json) return;
     snapshot=json;
-    if(ready && browser->LocationURL==localUri) browser->ExecuteScript(L"window.airAlert && window.airAlert.update("+snapshot+L");");
+    if(ready && browser->LocationURL==localUri) browser->DefaultInterface->PostWebMessageAsJson(const_cast<wchar_t*>(snapshot.c_str()));
 }

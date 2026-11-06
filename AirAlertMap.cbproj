@@ -100,6 +100,8 @@
         <HppCompile Include="src\WebMapForm.h"/>
         <CppCompile Include="src\HistoryReport.cpp"><BuildOrder>11</BuildOrder></CppCompile>
         <HppCompile Include="src\HistoryReport.h"/>
+        <CppCompile Include="src\UiCommand.cpp"><BuildOrder>12</BuildOrder></CppCompile>
+        <HppCompile Include="src\UiCommand.h"/>
         <HppCompile Include="src\ApiCredentials.h"/>
         <HppCompile Include="src\UkraineAlarmFeed.h"/>
         <HppCompile Include="src\AlertFeed.h"/>
