@@ -1,2 +1,13 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Принудительно учитывать PowerShell скрипты в статистике языков
+*.ps1 linguist-vendored=false
+
+# Принудительно учитывать Batch-файлы запуска
+*.cmd linguist-vendored=false
+*.bat linguist-vendored=false
+
+# Убедиться, что ассемблер x86 (.asm) считается частью кода проекта
+*.asm linguist-documentation=false
+*.asm linguist-vendored=false
