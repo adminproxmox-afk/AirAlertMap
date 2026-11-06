@@ -4,7 +4,10 @@
 #include "MapData.h"
 #include "ApiCredentials.h"
 #include "HistoryReport.h"
+#include "Preferences.h"
+#include "../resources/version.h"
 #include <Vcl.Dialogs.hpp>
+#include <Vcl.Clipbrd.hpp>
 #include <System.JSON.hpp>
 #include <memory>
 #include <stdio.h>
@@ -32,10 +35,12 @@ public:
 
 __fastcall TMainForm::TMainForm(TComponent* owner)
  : TWebMapForm(owner,ExtractFilePath(Application->ExeName)+L"web\\index.html",UnicodeString(AppStorage().Folder().c_str())+L"\\WebView2"),
- feedTimer(0),worker(0),reportWorker(0),provider(apUkraineAlarm),rememberKey(true),keySaved(false),demoMode(false),authPaused(false),historyOk(true),settingsError(false),detailsDirty(true),
- generation(0),settingsRevision(0),detailRevision(0),lastAttemptTick(GetTickCount()-60000UL),retryDelay(60000UL),selected(7),historyDays(7),confirmedAt(0),historyGeneratedAt(0) {
+ feedTimer(0),worker(0),reportWorker(0),storageWorker(0),storageRevision(0),diagnosticsRevision(0),retentionDays(0),lastApiError(aeNone),lastHttpStatus(0),lastNetworkError(0),lastCleanupAttempt(0),storageError(false),diagnosticsError(false),provider(apUkraineAlarm),rememberKey(true),keySaved(false),demoMode(false),authPaused(false),historyOk(true),settingsError(false),detailsDirty(true),pythonAvailable(PythonAvailable()),historyPending(false),
+ generation(0),settingsRevision(0),detailRevision(0),preferencesRevision(0),lastAttemptTick(GetTickCount()-60000UL),retryDelay(60000UL),selected(7),historyDays(7),pendingDays(7),confirmedAt(0),historyGeneratedAt(0) {
     Caption=L"AirAlertMap \u2014 \u041c\u0430\u043f\u0430 \u0442\u0440\u0438\u0432\u043e\u0433 \u0423\u043a\u0440\u0430\u0457\u043d\u0438";
     selected=storage.LoadSelectedRegion(selected);
+    preferences=DefaultPreferences();storage.LoadPreferences(preferences);
+    retentionDays=storage.LoadHistoryRetention();
     keySaved=LoadApiCredential(ApiCredentialTarget,apiToken,provider);
     if(!keySaved) {
         apiToken=System::Sysutils::GetEnvironmentVariable(L"UKRAINEALARM_API_KEY").c_str();
@@ -51,6 +56,7 @@ __fastcall TMainForm::TMainForm(TComponent* owner)
     if(remaining) { lastAttemptTick=GetTickCount(); retryDelay=remaining*1000UL; }
     connectionText=apiToken.empty()?UnicodeString(L"\u0414\u043e\u0434\u0430\u0439\u0442\u0435 API-\u043a\u043b\u044e\u0447 \u0443 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f\u0445 \u0434\u043b\u044f \u0437\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f \u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u0438\u0445 \u0434\u0430\u043d\u0438\u0445."):UnicodeString(L"\u041e\u0447\u0456\u043a\u0443\u0432\u0430\u043d\u043d\u044f \u043f\u0435\u0440\u0448\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443 \u0434\u043e API\u2026");
     RecordObservation(false);
+    RefreshStorage();
     OnCommand=Command;
     feedTimer=new TTimer(this); feedTimer->Interval=250; feedTimer->OnTimer=FeedTick; feedTimer->Enabled=true;
     PublishState();
@@ -60,9 +66,11 @@ __fastcall TMainForm::~TMainForm() {
     OnCommand=0;
     if(worker) { worker->WaitFor(); delete worker; worker=0; }
     if(reportWorker) { reportWorker->WaitFor(); delete reportWorker; reportWorker=0; }
+    if(storageWorker) { delete storageWorker;storageWorker=0; }
     RecordObservation(false);
 }
 void TMainForm::RecordObservation(bool available) {
+    if(storageWorker)return; // Maintenance owns a consistent, paused history view.
     historyOk=storage.AppendObservation(feed.snapshot,available && !demoMode,provider,UtcSeconds());
 }
 void TMainForm::ApplyFeed() {
@@ -88,6 +96,7 @@ void TMainForm::SaveSettings(const UiCommand& command) {
     if(!stored) { settingsMessage=L"Windows \u043d\u0435 \u0437\u043c\u0456\u0433 \u0437\u0431\u0435\u0440\u0435\u0433\u0442\u0438 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f \u043a\u043b\u044e\u0447\u0430. \u041f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u0456 \u043d\u0430\u043b\u0430\u0448\u0442\u0443\u0432\u0430\u043d\u043d\u044f \u0437\u0430\u043b\u0438\u0448\u0438\u043b\u0438\u0441\u044f \u0447\u0438\u043d\u043d\u0438\u043c\u0438."; return; }
     apiToken=next; provider=command.provider; rememberKey=command.remember; keySaved=command.remember;
     ++generation; authPaused=false; feed.Unavailable(); confirmedAt=0; regionDirectory.clear();
+    lastApiError=aeNone;lastHttpStatus=0;lastNetworkError=0;
     if(provider==apUkraineAlarm) storage.LoadDirectory(regionDirectory,UtcSeconds());
     unsigned remaining=storage.LoadRetry(provider,UtcSeconds());
     lastAttemptTick=GetTickCount()-(remaining?0:60000UL); retryDelay=remaining?remaining*1000UL:60000UL;
@@ -103,6 +112,10 @@ void __fastcall TMainForm::Command(TObject*,const UnicodeString& message) {
     try {
         switch(command.type) {
             case ucReady: detailsDirty=true; break;
+            case ucStorageStats: RefreshStorage(); break;
+            case ucArchiveHistory: ArchiveHistory(); break;
+            case ucRetention: ChangeRetention(command.days); break;
+            case ucCopyDiagnostics: CopyDiagnostics(); break;
             case ucSelect: selected=command.region; storage.SaveSelectedRegion(selected); break;
             case ucRefresh: StartRequest(); break;
             case ucMode: SetMode(command.live); break;
@@ -116,26 +129,33 @@ void __fastcall TMainForm::Command(TObject*,const UnicodeString& message) {
             case ucDemoReset: if(demoMode) model.ResetDemo(); break;
             case ucDemoCycle: if(demoMode) model.Cycle(selected); break;
             case ucDemoUnknown: if(demoMode) for(int i=0;i<RegionCount;++i) model.states[i]=asUnknown; break;
-            case ucHistory: LoadHistory(command.days); break;
+            case ucHistory: LoadHistory(command.days,command.territory); break;
+            case ucPreferences:
+                ++preferencesRevision;
+                if(storage.SavePreferences(command.preferences)){preferences=command.preferences;preferencesError=L"";}
+                else preferencesError=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0431\u0435\u0440\u0435\u0433\u0442\u0438 \u0432\u0438\u0433\u043b\u044f\u0434 \u0456 \u043e\u0431\u0440\u0430\u043d\u0435. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0434\u043e\u0441\u0442\u0443\u043f \u0434\u043e \u043f\u0430\u043f\u043a\u0438 \u0434\u0430\u043d\u0438\u0445.";
+                break;
             case ucExport: ExportReport(command.format); break;
             default: break;
         }
     } catch(...) { ++settingsRevision; settingsError=true; settingsMessage=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0438\u043a\u043e\u043d\u0430\u0442\u0438 \u0434\u0456\u044e. \u041f\u043e\u0432\u0442\u043e\u0440\u0456\u0442\u044c \u0441\u043f\u0440\u043e\u0431\u0443."; }
     PublishState();
 }
-void TMainForm::LoadHistory(int days) {
-    if(reportWorker) return;
-    historyDays=days; historyJson=L""; historyError=L""; historyGeneratedAt=0;
+void TMainForm::LoadHistory(int days,const std::string& territory) {
+    if(reportWorker||storageWorker) {historyPending=true;pendingDays=days;pendingTerritory=territory;return;}
+    historyDays=days;historyTerritory=territory;historyJson=L"";historyError=L"";historyGeneratedAt=0;
+    if(!pythonAvailable){historyError=L"\u0414\u043b\u044f \u0456\u0441\u0442\u043e\u0440\u0456\u0457 \u043f\u043e\u0442\u0440\u0456\u0431\u0435\u043d Python 3.10+. \u0412\u0441\u0442\u0430\u043d\u043e\u0432\u0456\u0442\u044c Python \u0456 \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0456\u0442\u044c \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0443. \u041c\u0430\u043f\u0430 \u043f\u0440\u0430\u0446\u044e\u0454 \u0431\u0435\u0437 Python.";return;}
     UnicodeString script=ExtractFilePath(Application->ExeName)+L"analytics\\analyze.py";
     if(!FileExists(script)) { historyError=L"\u041d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e \u043c\u043e\u0434\u0443\u043b\u044c \u0430\u043d\u0430\u043b\u0456\u0442\u0438\u043a\u0438. \u041f\u043e\u0432\u0442\u043e\u0440\u0456\u0442\u044c \u0437\u0431\u0456\u0440\u043a\u0443 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438."; return; }
     __int64 since=days?UtcSeconds()-(__int64)days*86400:0;
-    reportWorker=new TReportWorker(script.c_str(),storage.Folder(),Regions[selected].iso,since);
+    reportWorker=new TReportWorker(script.c_str(),storage.Folder(),Regions[selected].iso,since,territory);
     reportWorker->Start();
 }
 void TMainForm::PollReport() {
     if(!reportWorker || WaitForSingleObject((HANDLE)reportWorker->Handle,0)!=WAIT_OBJECT_0) return;
     unsigned long error=reportWorker->Error;
     delete reportWorker; reportWorker=0;
+    if(historyPending){historyPending=false;LoadHistory(pendingDays,pendingTerritory);return;}
     if(error) { historyError=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0440\u043e\u0437\u0440\u0430\u0445\u0443\u0432\u0430\u0442\u0438 \u0456\u0441\u0442\u043e\u0440\u0456\u044e. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0432\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044f Python 3.10 \u0430\u0431\u043e \u043d\u043e\u0432\u0456\u0448\u043e\u0433\u043e \u0442\u0430 \u0434\u043e\u0441\u0442\u0443\u043f \u0434\u043e \u043f\u0430\u043f\u043a\u0438 \u0434\u0430\u043d\u0438\u0445."; return; }
     FILE* file=_wfopen((storage.Folder()+L"\\reports\\history.json").c_str(),L"rb");
     if(!file) { historyError=L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0432\u0456\u0434\u043a\u0440\u0438\u0442\u0438 \u0440\u043e\u0437\u0440\u0430\u0445\u043e\u0432\u0430\u043d\u0443 \u0456\u0441\u0442\u043e\u0440\u0456\u044e."; return; }
@@ -149,7 +169,7 @@ void TMainForm::PollReport() {
     historyError=L"\u0417\u0432\u0456\u0442 \u043c\u0456\u0441\u0442\u0438\u0442\u044c \u043d\u0435\u043a\u043e\u0440\u0435\u043a\u0442\u043d\u0456 \u0434\u0430\u043d\u0456. \u0421\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u0435\u0440\u0435\u0440\u0430\u0445\u0443\u0432\u0430\u0442\u0438 \u0456\u0441\u0442\u043e\u0440\u0456\u044e.";
 }
 void TMainForm::ExportReport(const std::string& format) {
-    if(reportWorker || historyJson.IsEmpty() || !historyError.IsEmpty()) return;
+    if(reportWorker || storageWorker || historyJson.IsEmpty() || !historyError.IsEmpty()) return;
     std::auto_ptr<TSaveDialog> dialog(new TSaveDialog(this));
     UnicodeString extension(format.c_str());
     dialog->Title=L"\u0415\u043a\u0441\u043f\u043e\u0440\u0442 \u0456\u0441\u0442\u043e\u0440\u0456\u0457"; dialog->DefaultExt=extension;
@@ -157,7 +177,7 @@ void TMainForm::ExportReport(const std::string& format) {
     dialog->Filter=extension+L"|*."+extension;
     dialog->Options=dialog->Options<<ofOverwritePrompt<<ofPathMustExist;
     if(dialog->Execute()) {
-        UnicodeString source=UnicodeString(storage.Folder().c_str())+L"\\reports\\history."+extension;
+        UnicodeString source=UnicodeString(storage.Folder().c_str())+UnicodeString(!historyTerritory.empty()&&format=="csv"?L"\\reports\\territory.":L"\\reports\\history.")+extension;
         ++settingsRevision;
         settingsError=CopyFileW(source.c_str(),dialog->FileName.c_str(),FALSE)==FALSE;
         settingsMessage=settingsError?UnicodeString(L"\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0437\u0431\u0435\u0440\u0435\u0433\u0442\u0438 \u0444\u0430\u0439\u043b. \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0442\u0435 \u0434\u043e\u0441\u0442\u0443\u043f \u0434\u043e \u043f\u0430\u043f\u043a\u0438."):UnicodeString(L"\u0424\u0430\u0439\u043b \u0456\u0441\u0442\u043e\u0440\u0456\u0457 \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u043e.");
@@ -179,6 +199,7 @@ void TMainForm::StartRequest() {
     PublishState();
 }
 void __fastcall TMainForm::FeedTick(TObject*) {
+    PollStorage();
     PollReport();
     if(worker && WaitForSingleObject((HANDLE)worker->Handle,0)==WAIT_OBJECT_0) {
         ApiResult result=worker->result;
@@ -195,6 +216,7 @@ void __fastcall TMainForm::FeedTick(TObject*) {
             retryDelay=remaining?remaining*1000UL:60000UL;
         }
         if(current) {
+            lastApiError=result.error;lastHttpStatus=result.status;lastNetworkError=result.networkError;
             if(!result.regionDirectory.empty()) {
                 if(result.regionDirectory!=regionDirectory) storage.SaveDirectory(result.regionDirectory,UtcSeconds());
                 regionDirectory=result.regionDirectory;
@@ -228,11 +250,13 @@ void __fastcall TMainForm::FeedTick(TObject*) {
     }
     if(!demoMode) {
         if(feed.Expire(GetTickCount())) {
+            lastApiError=aeStale;
             connectionText=L"\u041f\u043e\u043d\u0430\u0434 90 \u0441\u0435\u043a\u0443\u043d\u0434 \u0431\u0435\u0437 \u043f\u0456\u0434\u0442\u0432\u0435\u0440\u0434\u0436\u0435\u043d\u043d\u044f API. \u041f\u043e\u0442\u043e\u0447\u043d\u0456 \u0434\u0430\u043d\u0456 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0456.";
             ApplyFeed();
         }
         StartRequest();
     }
+    if(retentionDays && pythonAvailable && !storageWorker && !reportWorker && (lastCleanupAttempt==0 || UtcSeconds()-lastCleanupAttempt>=86400))StartStorage("prune");
     PublishState();
 }
 
@@ -245,6 +269,20 @@ void TMainForm::PublishState() {
     DWORD elapsed=(DWORD)(GetTickCount()-lastAttemptTick);
     unsigned remaining=elapsed<retryDelay?(retryDelay-elapsed+999)/1000:0;
     state->AddPair(L"version",new TJSONNumber(1));
+    state->AddPair(L"appVersion",UnicodeString(APP_VERSION_W));
+    state->AddPair(L"pythonAvailable",new TJSONBool(pythonAvailable));
+    state->AddPair(L"preferencesRevision",new TJSONNumber((int)preferencesRevision));
+    state->AddPair(L"preferences",TJSONObject::ParseJSONValue(UTF8String(preferences.c_str(),preferences.size()),false,true));
+    state->AddPair(L"preferencesError",preferencesError);
+    TJSONObject* storageState=new TJSONObject();
+    storageState->AddPair(L"revision",new TJSONNumber((int)storageRevision));storageState->AddPair(L"busy",new TJSONBool(storageWorker!=0));
+    storageState->AddPair(L"bytes",new TJSONNumber((__int64)historyStorage.bytes));storageState->AddPair(L"files",new TJSONNumber((int)historyStorage.files));
+    storageState->AddPair(L"catalogBytes",new TJSONNumber((__int64)historyStorage.catalogBytes));storageState->AddPair(L"catalogs",new TJSONNumber((int)historyStorage.catalogs));
+    storageState->AddPair(L"retentionDays",new TJSONNumber((int)retentionDays));storageState->AddPair(L"message",storageMessage);storageState->AddPair(L"error",new TJSONBool(storageError));state->AddPair(L"historyStorage",storageState);
+    DiagnosticState diagnostic;diagnostic.provider=provider;diagnostic.apiError=lastApiError;diagnostic.httpStatus=lastHttpStatus;diagnostic.networkError=lastNetworkError;diagnostic.confirmedAt=confirmedAt;
+    diagnostic.available=feed.available;diagnostic.demo=demoMode;diagnostic.pythonAvailable=pythonAvailable;diagnostic.historyOk=historyOk;diagnostic.keyConfigured=!apiToken.empty();diagnostic.storage=historyStorage;diagnostic.retentionDays=retentionDays;
+    diagnostic.retrySeconds=remaining;diagnostics=BuildDiagnostics(diagnostic);
+    state->AddPair(L"diagnostics",diagnostics);state->AddPair(L"diagnosticsRevision",new TJSONNumber((int)diagnosticsRevision));state->AddPair(L"diagnosticsMessage",diagnosticsMessage);state->AddPair(L"diagnosticsError",new TJSONBool(diagnosticsError));
     state->AddPair(L"levels",UnicodeString(levels.c_str()));
     state->AddPair(L"detailRevision",new TJSONNumber((int)detailRevision));
     if(detailsDirty) {
@@ -285,9 +323,10 @@ void TMainForm::PublishState() {
     state->AddPair(L"settingsRevision",new TJSONNumber(settingsRevision));
     state->AddPair(L"settingsMessage",settingsMessage);
     state->AddPair(L"settingsError",new TJSONBool(settingsError));
-    state->AddPair(L"historyLoading",new TJSONBool(reportWorker!=0));
+    state->AddPair(L"historyLoading",new TJSONBool(reportWorker!=0 || (storageWorker && historyPending)));
     state->AddPair(L"historyError",historyError);
     state->AddPair(L"historyDays",new TJSONNumber(historyDays));
+    state->AddPair(L"historyTerritory",UnicodeString(historyTerritory.c_str()));
     state->AddPair(L"historyOk",new TJSONBool(historyOk));
     state->AddPair(L"historyGeneratedAt",new TJSONNumber(historyGeneratedAt));
     if(!historyJson.IsEmpty()) state->AddPair(L"history",TJSONObject::ParseJSONValue(historyJson,false,false));

@@ -17,3 +17,5 @@ __pycache__/
 *.pyc
 /vendor/webview2/
 /.playwright-cli/
+
+/dist/

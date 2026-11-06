@@ -1,6 +1,7 @@
 #include <vcl.h>
 #pragma hdrstop
 #include "WebMapForm.h"
+#include "SingleInstance.h"
 #include <shlwapi.h>
 #pragma link "shlwapi.lib"
 #pragma link "vcledge.lib"
@@ -8,6 +9,8 @@
 
 __fastcall TWebMapForm::TWebMapForm(TComponent* owner,const UnicodeString& page,const UnicodeString& profile)
  : TForm(owner),browser(0),notice(0),ready(false),OnCommand(0) {
+    Icon->LoadFromResourceName((NativeUInt)HInstance,L"MAINICON");
+    Application->Icon->Assign(Icon);
     Caption=L"AirAlertMap | \u0406\u043d\u0442\u0435\u0440\u0430\u043a\u0442\u0438\u0432\u043d\u0430 \u043c\u0430\u043f\u0430";
     Width=1280; Height=850; Position=poOwnerFormCenter;
     Constraints->MinWidth=820; Constraints->MinHeight=620;
@@ -28,6 +31,18 @@ __fastcall TWebMapForm::TWebMapForm(TComponent* owner,const UnicodeString& page,
     browser->OnWebMessageReceived=Message;
     browser->OnNewWindowRequested=NewWindow;
     browser->CreateWebView();
+}
+void __fastcall TWebMapForm::CreateWnd() {
+    TForm::CreateWnd();
+    // The taskbar reads the HWND icon, independently of Explorer's EXE icon.
+    // Reapply both slots whenever VCL recreates the native window.
+    SendMessage(Handle,WM_SETICON,ICON_BIG,(LPARAM)Icon->Handle);
+    SendMessage(Handle,WM_SETICON,ICON_SMALL,(LPARAM)Icon->Handle);
+    BindSingleInstanceWindow(Handle);
+}
+void __fastcall TWebMapForm::WndProc(Winapi::Messages::TMessage& Message) {
+    if(HandleAllocated() && HandleSingleInstanceMessage(Handle,Message.Msg)){Message.Result=1;return;}
+    TForm::WndProc(Message);
 }
 void __fastcall TWebMapForm::Created(Vcl::Edge::TCustomEdgeBrowser*,HRESULT result) {
     if(FAILED(result)) {

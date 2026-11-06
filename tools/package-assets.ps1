@@ -8,6 +8,7 @@ foreach ($folder in @('web','analytics','data')) {
 }
 Get-ChildItem -LiteralPath (Join-Path $projectRoot 'web') -File | Copy-Item -Destination (Join-Path $Destination 'web') -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'analytics\analyze.py') -Destination (Join-Path $Destination 'analytics') -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot 'analytics\manage_history.py') -Destination (Join-Path $Destination 'analytics') -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'data\regions.json') -Destination (Join-Path $Destination 'data') -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'data\NOTICE.md') -Destination (Join-Path $Destination 'data') -Force
 $loaderSource=Join-Path $projectRoot 'vendor\webview2\sdk\build\native\x86\WebView2Loader.dll'

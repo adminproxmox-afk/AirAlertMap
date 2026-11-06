@@ -16,6 +16,9 @@ class TWebMapForm : public TForm {
     void __fastcall Navigating(Vcl::Edge::TCustomEdgeBrowser* Sender,Vcl::Edge::TNavigationStartingEventArgs* args);
     void __fastcall NewWindow(Vcl::Edge::TCustomEdgeBrowser* Sender,Vcl::Edge::TNewWindowRequestedEventArgs* args);
     void __fastcall Message(Vcl::Edge::TCustomEdgeBrowser* Sender,Vcl::Edge::TWebMessageReceivedEventArgs* args);
+protected:
+    virtual void __fastcall CreateWnd();
+    virtual void __fastcall WndProc(Winapi::Messages::TMessage& Message);
 public:
     TWebCommandEvent OnCommand;
     __fastcall TWebMapForm(TComponent* owner,const UnicodeString& page,const UnicodeString& profile);

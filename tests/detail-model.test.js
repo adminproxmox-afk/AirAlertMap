@@ -35,5 +35,15 @@ test('unlisted territories explain provider coverage instead of a connection fai
  assert.match(model.explanation(model.status(zone,records,levels,true),zone),/не має окремого regionId/);
  assert.match(model.explanation(model.status(city,records,levels,true),city),/Севастополя немає/);
  assert.match(model.explanation(model.status(ambiguous,records,levels,true),ambiguous),/не надає окремого/);
- assert.equal(model.status(zone,records,levels,true).level,'?');
+ assert.equal(model.status(zone,records,levels,true).level,'P');
+});
+test('Chernobyl zone exposes Kyiv oblast context without claiming a separate API status',()=>{
+ const zone={code:'UA3200000',oblast:4,kind:'Community'};
+ const s=model.status(zone,new Map(),'P'.repeat(27),true);
+ assert.equal(s.level,'P');assert.equal(s.precision,'State');assert.equal(s.context,true);
+ assert.match(model.text(s),/Київська область/);
+ assert.match(model.explanation(s,zone),/не є окремим статусом зони/);
+ assert.equal(model.status(zone,new Map(),'N'.repeat(27),true).level,'N');
+ assert.equal(model.status(zone,new Map(),'R'.repeat(27),false).level,'?');
+ assert.equal(model.status({code:'other',oblast:4},new Map(),'P'.repeat(27),true).level,'?');
 });

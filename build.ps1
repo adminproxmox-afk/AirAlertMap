@@ -31,20 +31,25 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Credential test compilation failed' }
     & '.\CredentialTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'Credential tests failed' }
-    & $compiler '-tCV' '-tM' '-I..' '-eStorageTests.exe' '..\tests\StorageTests.cpp' '..\src\AppStorage.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\AlertFeed.cpp' '..\src\MapData.cpp'
+    & $compiler '-tCV' '-tM' '-I..' '-eStorageTests.exe' '..\tests\StorageTests.cpp' '..\src\AppStorage.cpp' '..\src\Preferences.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\AlertFeed.cpp' '..\src\MapData.cpp'
     if ($LASTEXITCODE -ne 0) { throw 'Storage test compilation failed' }
     & '.\StorageTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'Storage tests failed' }
-    & $compiler '-tCV' '-tM' '-I..' '-eUiCommandTests.exe' '..\tests\UiCommandTests.cpp' '..\src\UiCommand.cpp' '..\src\AlertFeed.cpp'
+    & $compiler '-tCV' '-tM' '-I..' '-ePreferencesTests.exe' '..\tests\PreferencesTests.cpp' '..\src\Preferences.cpp'
+    if ($LASTEXITCODE -ne 0) { throw 'Preferences test compilation failed' }
+    & '.\PreferencesTests.exe'
+    if ($LASTEXITCODE -ne 0) { throw 'Preferences tests failed' }
+    & $compiler '-tCV' '-tM' '-I..' '-eUiCommandTests.exe' '..\tests\UiCommandTests.cpp' '..\src\UiCommand.cpp' '..\src\Preferences.cpp' '..\src\AlertFeed.cpp'
     if ($LASTEXITCODE -ne 0) { throw 'UI command test compilation failed' }
     & '.\UiCommandTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'UI command tests failed' }
-    & $compiler '-tCV' '-tM' '-I..' '-eMainWindowTests.exe' '..\tests\MainWindowTests.cpp' '..\src\WebMapForm.cpp'
+    & (Join-Path $PSScriptRoot 'tools\prepare-resources.ps1') -BdsRoot $BdsRoot
+    & $compiler '-tCV' '-tM' '-I..' '-eMainWindowTests.exe' '..\tests\MainWindowTests.cpp' '..\src\WebMapForm.cpp' 'AirAlertMap.res'
     if ($LASTEXITCODE -ne 0) { throw 'Main window test compilation failed' }
     & '.\MainWindowTests.exe'
     if ($LASTEXITCODE -ne 0) { throw 'Main window registration test failed' }
     if (-not $TestsOnly) {
-        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' '..\src\AlertFeed.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\ApiCredentials.cpp' '..\src\AppStorage.cpp' '..\src\WebMapForm.cpp' '..\src\HistoryReport.cpp' '..\src\UiCommand.cpp' 'AlertAsm.obj'
+        & $compiler '-tWVU' '-tM' '-DUNICODE' '-D_UNICODE' '-I..' '-eAirAlertMap.exe' '..\src\AirAlertMap.cpp' '..\src\MainForm.cpp' '..\src\AlertModel.cpp' '..\src\MapData.cpp' '..\src\AlertFeed.cpp' '..\src\AlertsHttp.cpp' '..\src\UkraineAlarmFeed.cpp' '..\src\ApiCredentials.cpp' '..\src\AppStorage.cpp' '..\src\Preferences.cpp' '..\src\WebMapForm.cpp' '..\src\HistoryReport.cpp' '..\src\UiCommand.cpp' 'AlertAsm.obj' 'AirAlertMap.res'
         if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
         & (Join-Path $PSScriptRoot 'tools\package-assets.ps1') -Destination (Join-Path $PSScriptRoot 'build')
         Write-Host "Application: $PSScriptRoot\build\AirAlertMap.exe"

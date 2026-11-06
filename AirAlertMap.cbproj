@@ -52,7 +52,9 @@
         <IncludePath>asm\;src\;$(IncludePath)</IncludePath>
         <ILINK_LibraryPath>asm\;src\;$(ILINK_LibraryPath)</ILINK_LibraryPath>
         <SanitizedProjectName>AirAlertMap</SanitizedProjectName>
-        <Icon_MainIcon>$(BDS)\bin\cbuilder_PROJECTICON.ico</Icon_MainIcon>
+        <Icon_MainIcon>resources\AirAlertMap.ico</Icon_MainIcon>
+        <VerInfo_IncludeVerInfo>false</VerInfo_IncludeVerInfo>
+        <SkipResGeneration>true</SkipResGeneration>
         <UWP_CppLogo44>$(BDS)\bin\Artwork\Windows\UWP\cppreg_UwpDefault_44.png</UWP_CppLogo44>
         <UWP_CppLogo150>$(BDS)\bin\Artwork\Windows\UWP\cppreg_UwpDefault_150.png</UWP_CppLogo150>
     </PropertyGroup>
@@ -81,6 +83,11 @@
         <BCC_PCHName_Clang>MapData.h</BCC_PCHName_Clang>
     </PropertyGroup>
     <ItemGroup>
+        <None Include="resources\AirAlertMap.rc"/>
+        <None Include="resources\AirAlertMap.ico"/>
+        <None Include="resources\version.h"/>
+        <CppCompile Include="src\Preferences.cpp"><BuildOrder>13</BuildOrder></CppCompile>
+        <HppCompile Include="src\Preferences.h"/>
         <AsmCompile Include="asm\AlertAsm.asm">
             <BuildOrder>1</BuildOrder>
         </AsmCompile>
@@ -151,6 +158,9 @@
         <ProjectFileVersion>12</ProjectFileVersion>
     </ProjectExtensions>
     <Import Project="$(BDS)\Bin\CodeGear.Cpp.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Cpp.Targets')"/>
+    <Target Name="PrepareAirAlertResources" BeforeTargets="_ResolveOutput">
+        <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\tools\prepare-resources.ps1&quot; -BdsRoot &quot;$(BDS)&quot; -Destination &quot;$(MSBuildProjectDirectory)\build\ide\$(Config)\AirAlertMap.res&quot;"/>
+    </Target>
     <Target Name="PackageAirAlertAssets" AfterTargets="Build">
         <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\tools\package-assets.ps1&quot; -Destination &quot;$(MSBuildProjectDirectory)\build\ide\$(Config)&quot;"/>
     </Target>

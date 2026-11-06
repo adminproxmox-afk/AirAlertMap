@@ -65,39 +65,61 @@ static std::wstring FindPython() {
     }
     return found;
 }
-__fastcall TReportWorker::TReportWorker(const std::wstring& scriptPath,const std::wstring& folder,const std::string& iso,__int64 periodStart)
+bool PythonAvailable() { return !FindPython().empty(); }
+__fastcall TReportWorker::TReportWorker(const std::wstring& scriptPath,const std::wstring& folder,const std::string& iso,__int64 periodStart,const std::string& territoryId)
  : TThread(true),script(scriptPath),history(folder),output(folder+L"\\reports"),since(periodStart),Error(0) {
     FreeOnTerminate=false;
     for(unsigned i=0;i<iso.size();++i) region+=(wchar_t)iso[i];
+    for(unsigned i=0;i<territoryId.size();++i) territory+=(wchar_t)territoryId[i];
     Report=output+L"\\history.html";
 }
-void __fastcall TReportWorker::Execute() {
+static std::wstring QuoteArgument(const std::wstring& value) {
+    std::wstring out=L"\""; unsigned slashes=0;
+    for(unsigned i=0;i<value.size();++i) {
+        if(value[i]==L'\\') {++slashes;continue;}
+        if(value[i]==L'"') {out.append(slashes*2+1,L'\\');out+=L'"';}
+        else {out.append(slashes,L'\\');out+=value[i];}
+        slashes=0;
+    }
+    out.append(slashes*2,L'\\');out+=L'"';return out;
+}
+unsigned long RunPythonTool(const std::wstring& script,const std::vector<std::wstring>& args,unsigned long timeoutMs,HANDLE cancel) {
     try {
+        if(script.empty() || script.find(L'\0')!=std::wstring::npos)return ERROR_INVALID_PARAMETER;
+        if(cancel && WaitForSingleObject(cancel,0)==WAIT_OBJECT_0)return ERROR_CANCELLED;
         std::wstring executable=FindPython();
-        if(executable.empty()) { Error=ERROR_FILE_NOT_FOUND; return; }
-        std::wstring command=std::wstring(L"\"")+executable+L"\" -I \""+script+L"\" --history \""+history+
-            L"\" --output \""+output+L"\" --region \""+region+L"\"";
-        if(since>0) { wchar_t number[40]; swprintf(number,L"%I64d",since); command+=std::wstring(L" --since ")+number; }
+        if(executable.empty())return ERROR_FILE_NOT_FOUND;
+        std::wstring command=QuoteArgument(executable)+L" -I "+QuoteArgument(script);
+        for(unsigned i=0;i<args.size();++i){if(args[i].find(L'\0')!=std::wstring::npos)return ERROR_INVALID_PARAMETER;command+=L" "+QuoteArgument(args[i]);}
+        if(command.size()>=32767)return ERROR_INVALID_PARAMETER;
         std::vector<wchar_t> environment;
         wchar_t* inherited=GetEnvironmentStringsW();
-        if(!inherited) { Error=GetLastError(); return; }
+        if(!inherited)return GetLastError();
         const wchar_t* excluded[]={L"UKRAINEALARM_API_KEY=",L"ALERTS_IN_UA_TOKEN="};
         for(const wchar_t* item=inherited;*item;item+=wcslen(item)+1) {
             bool keep=true;
-            for(unsigned i=0;i<2;++i) if(_wcsnicmp(item,excluded[i],wcslen(excluded[i]))==0) keep=false;
-            if(keep) environment.insert(environment.end(),item,item+wcslen(item)+1);
+            for(unsigned i=0;i<2;++i)if(_wcsnicmp(item,excluded[i],wcslen(excluded[i]))==0)keep=false;
+            if(keep)environment.insert(environment.end(),item,item+wcslen(item)+1);
         }
-        FreeEnvironmentStringsW(inherited); environment.push_back(0);
-        if(environment.size()==1) environment.push_back(0);
-        STARTUPINFOW startup={0}; startup.cb=sizeof(startup);
-        PROCESS_INFORMATION process={0};
-        if(!CreateProcessW(executable.c_str(),&command[0],NULL,NULL,FALSE,CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,&environment[0],NULL,&startup,&process)) {
-            Error=GetLastError(); return;
-        }
-        DWORD wait=WaitForSingleObject(process.hProcess,120000),code=1;
-        if(wait==WAIT_OBJECT_0) GetExitCodeProcess(process.hProcess,&code);
-        else { TerminateProcess(process.hProcess,1); code=ERROR_TIMEOUT; }
-        CloseHandle(process.hThread); CloseHandle(process.hProcess);
-        Error=code;
-    } catch(...) { Error=ERROR_GEN_FAILURE; }
+        FreeEnvironmentStringsW(inherited);environment.push_back(0);
+        if(environment.size()==1)environment.push_back(0);
+        STARTUPINFOW startup={0};startup.cb=sizeof(startup);PROCESS_INFORMATION process={0};
+        if(!CreateProcessW(executable.c_str(),&command[0],NULL,NULL,FALSE,CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,&environment[0],NULL,&startup,&process))return GetLastError();
+        HANDLE handles[]={process.hProcess,cancel};
+        DWORD wait=cancel?WaitForMultipleObjects(2,handles,FALSE,timeoutMs):WaitForSingleObject(process.hProcess,timeoutMs),code=1;
+        if(wait==WAIT_OBJECT_0)GetExitCodeProcess(process.hProcess,&code);
+        else {code=wait==WAIT_OBJECT_0+1?ERROR_CANCELLED:wait==WAIT_TIMEOUT?ERROR_TIMEOUT:GetLastError();TerminateProcess(process.hProcess,code);WaitForSingleObject(process.hProcess,5000);}
+        CloseHandle(process.hThread);CloseHandle(process.hProcess);return code;
+    }catch(...){return ERROR_GEN_FAILURE;}
+}
+void __fastcall TReportWorker::Execute() {
+    std::vector<std::wstring> args;
+    args.push_back(L"--history");args.push_back(history);args.push_back(L"--output");args.push_back(output);args.push_back(L"--region");args.push_back(region);
+    if(!territory.empty()) {
+        if(territory.size()>10){Error=ERROR_INVALID_PARAMETER;return;}
+        for(unsigned i=0;i<territory.size();++i)if(territory[i]<L'0'||territory[i]>L'9'){Error=ERROR_INVALID_PARAMETER;return;}
+        args.push_back(L"--territory");args.push_back(territory);
+    }
+    if(since>0){wchar_t number[40];swprintf(number,L"%I64d",since);args.push_back(L"--since");args.push_back(number);}
+    Error=RunPythonTool(script,args);
 }

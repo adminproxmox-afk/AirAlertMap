@@ -32,7 +32,7 @@ async (page) => {
  await page.locator('[data-export=csv]').click();
  check(await page.evaluate(()=>{const p=window.testPackets.at(-1);return p.type==='export'&&p.format==='csv'&&Object.keys(p).length===3;}),'export sends only an allowed format');
  await page.locator('#history-region').selectOption('25');
- check(await page.evaluate(()=>window.testPackets.at(-1).type==='select'&&window.testPackets.at(-1).region===25),'selection is sent to C++');
+ check(await page.evaluate(()=>window.testPackets.findLast(p=>p.type==='select')?.region===25&&window.testPackets.at(-1).type==='history'),'selection is sent to C++');
  await page.getByRole('button',{name:'Мапа',exact:true}).click();
  check(await page.locator('#region-select').inputValue()==='25','selected region is shared between pages');
  await page.evaluate(()=>window.airAlert.update({...window.testState,selected:25,at:Date.now()/1000-100}));

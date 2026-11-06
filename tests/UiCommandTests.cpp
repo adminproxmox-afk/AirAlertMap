@@ -1,4 +1,5 @@
 #include "../src/UiCommand.h"
+#include "../src/Preferences.h"
 #include <stdio.h>
 #include <stdlib.h>
 static int checks=0;
@@ -28,5 +29,15 @@ int main() {
     check(!ParseUiCommand(L"{\"version\":1,\"type\":\"execute\",\"script\":\"alert(1)\"}",command),"no arbitrary native execution");
     check(!ParseUiCommand(System::UnicodeString(std::wstring(9000,L'X').c_str()),command),"oversized message rejected");
     check(!ParseUiCommand(L"{\"version\":1,\"type\":\"select\",\"region\":0,\"region\":1}",command),"duplicate fields rejected");
+    check(ParseUiCommand(L"{\"version\":1,\"type\":\"history\",\"days\":7,\"territory\":\"1293\"}",command)&&command.territory=="1293","history accepts bounded numeric territory ID");
+    check(!ParseUiCommand(L"{\"version\":1,\"type\":\"history\",\"days\":7,\"territory\":\"../key\"}",command),"history ID cannot inject a path or command");
+    System::UnicodeString prefs=System::UnicodeString(L"{\"version\":1,\"type\":\"preferences\",\"preferences\":")+System::UnicodeString(DefaultPreferences().c_str())+L"}";
+    check(ParseUiCommand(prefs,command)&&command.type==ucPreferences&&!command.preferences.empty(),"preferences use validated native storage command");
+    check(!ParseUiCommand(L"{\"version\":1,\"type\":\"preferences\",\"preferences\":{\"token\":\"secret\"}}",command),"invalid preference schema is rejected");
+    check(ParseUiCommand(L"{\"version\":1,\"type\":\"retention\",\"days\":90,\"confirm\":true}",command)&&command.type==ucRetention&&command.days==90,"explicit retention command decoded");
+    check(!ParseUiCommand(L"{\"version\":1,\"type\":\"retention\",\"days\":90}",command),"retention cannot run without confirmation");
+    check(!ParseUiCommand(L"{\"version\":1,\"type\":\"retention\",\"days\":1,\"confirm\":true}",command),"unsupported retention rejected");
+    check(ParseUiCommand(L"{\"version\":1,\"type\":\"copyDiagnostics\"}",command)&&command.type==ucCopyDiagnostics,"copy command does not accept supplied clipboard content");
+    check(ParseUiCommand(L"{\"version\":1,\"type\":\"archiveHistory\"}",command)&&command.type==ucArchiveHistory,"archive command uses native destination dialog");
     printf("PASS: %d web command checks\n",checks); return 0;
 }

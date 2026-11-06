@@ -18,6 +18,8 @@
    if(t&&t.name===shape.apiName&&t.parent===shape.apiParent&&t.oblast===shape.oblast)
     return {...t,precision:shape.kind};
    const level=levels[shape.oblast]||'?';
+   if(shape.code==='UA3200000'&&shape.oblast===4&&level!=='?')
+    return {level,precision:'State',severityKnown:false,reason:'oblastContext',context:true};
    // Full oblast coverage is meaningful even where the provider has no child
    // ID. A partial oblast gives no evidence about an unmapped child.
    return {level:level==='P'?'?':level,precision:'State',severityKnown:false,reason:shape.apiId?'directoryChanged':'notListed'};
@@ -28,6 +30,7 @@
    return scale>=3.2?'Community':scale>=1.7?'District':'State';
   },
   text(status) {
+   if(status.context)return 'Київська область: '+api.text({...status,context:false});
    if(status.level==='N')return 'Немає активної повітряної тривоги';
    if(status.level==='P')return 'Тривога в частині території';
    if(status.level==='?')return status.reason?'Немає окремого статусу API':'Немає підтверджених даних';
@@ -37,6 +40,7 @@
   explanation(status,shape) {
    if(status.precision==='unknown')return 'Статус не підтверджено свіжою відповіддю API. Перевірте підключення та час оновлення.';
    if(status.precision!=='State')return '';
+   if(status.context)return 'Чорнобильська зона відчуження не має окремого regionId у довіднику API. Показано загальний стан Київської області; це не є окремим статусом зони.';
    const reason=status.reason==='directoryChanged'?'Запис API змінив назву або ієрархію. Детальний статус не прив’язано до старої геометрії.':shape?.oblast===26?'Севастополя немає в довіднику цього API. Статус Криму не переноситься на місто.':shape?.code==='UA3200000'?'Чорнобильська зона відчуження не має окремого regionId у довіднику API.':'Постачальник не надає окремого перевіреного запису для цієї території.';
    return reason+(status.level==='?'?' Загальний частковий стан області не визначає статус цієї території.':' Показано підтверджений загальний стан усієї області.');
   }
